@@ -1,0 +1,26 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT"
+
+[[mods]]
+modId="extremedifficulty"
+version="1.0.0"
+displayName="Extreme Difficulty"
+description='''
+Makes all hostile mobs stronger x1.5 during the day and x1.85 at night.
+Nether and End are always in night mode.
+'''
+
+[[dependencies.extremedifficulty]]
+    modId="forge"
+    mandatory=true
+    versionRange="[47,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.extremedifficulty]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.20.1,1.21)"
+    ordering="NONE"
+    side="BOTH"
