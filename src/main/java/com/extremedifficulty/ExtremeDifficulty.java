@@ -6,6 +6,8 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraft.world.entity.monster.*;
+import net.minecraft.world.entity.boss.wither.WitherBoss;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -119,7 +121,6 @@ public class ExtremeDifficulty {
         } else if (entity instanceof WitherBoss) {
             setStats(entity, isNight ? 650 : 500, isNight ? 20 : 15, isNight ? 0.30 : 0.25);
         } else if (entity instanceof EnderDragon) {
-            // Dragon only has HP, no movement/damage attributes
             setMaxHealth(entity, isNight ? 420 : 320);
         }
     }
@@ -140,7 +141,7 @@ public class ExtremeDifficulty {
             // Scale current HP proportionally
             if (currentMax > 0) {
                 float newHp = (float) (currentHp / currentMax * hp);
-                entity.setHealth(Math.max(newHp, currentHp));
+                entity.setHealth(Math.max(newHp, (float)currentHp));
             }
         }
     }
