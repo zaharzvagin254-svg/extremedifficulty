@@ -1,123 +1,213 @@
 package com.extremedifficulty;
 
-import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
-import net.minecraftforge.event.entity.EntityJoinLevelEvent;
-import net.minecraftforge.event.TickEvent;
-import net.minecraft.world.entity.monster.Zombie;
-import net.minecraft.world.entity.monster.Skeleton;
-import net.minecraft.world.entity.monster.Husk;
-import net.minecraft.world.entity.monster.Stray;
-import net.minecraft.world.entity.monster.Creeper;
-import net.minecraft.world.entity.monster.Spider;
-import net.minecraft.world.entity.monster.CaveSpider;
-import net.minecraft.world.entity.monster.EnderMan;
-import net.minecraft.world.entity.monster.Drowned;
-import net.minecraft.world.entity.monster.Witch;
-import net.minecraft.world.entity.monster.Vindicator;
-import net.minecraft.world.entity.monster.Pillager;
-import net.minecraft.world.entity.monster.Evoker;
-import net.minecraft.world.entity.monster.Ravager;
-import net.minecraft.world.entity.monster.ZombifiedPiglin;
-import net.minecraft.world.entity.monster.Guardian;
-import net.minecraft.world.entity.monster.ElderGuardian;
-import net.minecraft.world.entity.monster.Blaze;
-import net.minecraft.world.entity.monster.Ghast;
-import net.minecraft.world.entity.monster.WitherSkeleton;
-import net.minecraft.world.entity.monster.piglin.Piglin;
-import net.minecraft.world.entity.monster.piglin.PiglinBrute;
-import net.minecraft.world.entity.boss.wither.WitherBoss;
-import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
+import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
+import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
+import net.minecraft.world.entity.boss.wither.WitherBoss;
+import net.minecraft.world.entity.monster.*;
+import net.minecraft.world.entity.monster.piglin.Piglin;
+import net.minecraft.world.entity.monster.piglin.PiglinBrute;
 import net.minecraft.world.level.Level;
-import net.minecraft.server.level.ServerLevel;
+import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
+import net.minecraftforge.eventbus.api.SubscribeEvent;
+import net.minecraftforge.fml.common.Mod;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 @Mod("extremedifficulty")
 public class ExtremeDifficulty {
 
-    public static final Logger LOGGER = LogManager.getLogger();
+    private static final Logger LOGGER = LogManager.getLogger();
+
+    // ── множители для обычных мобов ──────────────────────────────────────────
+    private static final double DAY_MULT   = 1.50;
+    private static final double NIGHT_MULT = 1.85;
+
+    // ── отдельные множители для боссов ───────────────────────────────────────
+    // Боссам увеличиваем только HP и урон, скорость не трогаем совсем
+    private static final double BOSS_HP_MULT     = 2.00;
+    private static final double BOSS_DAMAGE_MULT = 1.60;
+
+    // ── моб-специфичные исключения по скорости ───────────────────────────────
+    // Гасты, Призыватели и летающие мобы — скорость не масштабируем
+    // (у них она либо не применима, либо сделает поведение сломанным)
 
     public ExtremeDifficulty() {
         MinecraftForge.EVENT_BUS.register(this);
         LOGGER.info("[ExtremeDifficulty] Mod loaded! Mobs are now stronger.");
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  При появлении моба в мире
+    // ─────────────────────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onEntityJoin(EntityJoinLevelEvent event) {
         Entity entity = event.getEntity();
         Level level = event.getLevel();
+
         if (!(entity instanceof LivingEntity living)) return;
         if (level.isClientSide()) return;
-        applyBuffs(living, isNight(level));
+
+        boolean night = isNight(level);
+        applyBuffs(living, night);
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Каждый тик сервера — обновляем статы при смене дня/ночи
+    // ─────────────────────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onServerTick(TickEvent.LevelTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
         if (!(event.level instanceof ServerLevel serverLevel)) return;
-        if (serverLevel.getGameTime() % 40 != 0) return;
+
+        // Обновляем только раз в 100 тиков (5 сек) — не каждый тик,
+        // чтобы не нагружать сервер
+        if (serverLevel.getGameTime() % 100 != 0) return;
+
         boolean night = isNight(serverLevel);
-        serverLevel.getAllEntities().forEach(e -> {
-            if (e instanceof LivingEntity living) applyBuffs(living, night);
+        serverLevel.getEntities().getAll().forEach(entity -> {
+            if (entity instanceof LivingEntity living) {
+                applyBuffs(living, night);
+            }
         });
     }
 
-    private boolean isNight(Level level) {
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Определяем: ночь ли сейчас (или «вечное ночь»-измерение)
+    // ─────────────────────────────────────────────────────────────────────────
+    private static boolean isNight(Level level) {
+        // Незер и Энд — всегда ночной режим
         if (level.dimension() == Level.NETHER) return true;
-        if (level.dimension() == Level.END) return true;
+        if (level.dimension() == Level.END)    return true;
+
+        // В Верхнем мире — по игровому времени суток
         long time = level.getDayTime() % 24000;
         return time >= 13000 && time <= 23000;
     }
 
-    private void applyBuffs(LivingEntity e, boolean n) {
-        if (e instanceof Zombie)               setStats(e, n?50:35,   n?7:5,   n?0.40:0.32);
-        else if (e instanceof Skeleton)        setStats(e, n?45:32,   n?6:5,   n?0.36:0.28);
-        else if (e instanceof Husk)            setStats(e, n?50:35,   n?8:6,   n?0.38:0.30);
-        else if (e instanceof Stray)           setStats(e, n?45:32,   n?8:6,   n?0.36:0.28);
-        else if (e instanceof Creeper)         setStats(e, n?42:30,   n?4:3,   n?0.38:0.30);
-        else if (e instanceof CaveSpider)      setStats(e, n?28:20,   n?5:4,   n?0.56:0.45);
-        else if (e instanceof Spider)          setStats(e, n?36:26,   n?5:4,   n?0.52:0.42);
-        else if (e instanceof EnderMan)        setStats(e, n?90:65,   n?14:11, n?0.44:0.35);
-        else if (e instanceof Drowned)         setStats(e, n?48:34,   n?8:6,   n?0.36:0.28);
-        else if (e instanceof Witch)           setStats(e, n?58:42,   n?4:3,   n?0.36:0.28);
-        else if (e instanceof Vindicator)      setStats(e, n?56:40,   n?20:15, n?0.40:0.32);
-        else if (e instanceof Pillager)        setStats(e, n?52:38,   n?8:6,   n?0.38:0.30);
-        else if (e instanceof Evoker)          setStats(e, n?52:38,   n?6:4,   n?0.36:0.28);
-        else if (e instanceof Ravager)         setStats(e, n?240:175, n?26:20, n?0.38:0.30);
-        else if (e instanceof ZombifiedPiglin) setStats(e, n?48:35,   n?13:10, n?0.38:0.30);
-        else if (e instanceof PiglinBrute)     setStats(e, n?115:85,  n?36:28, n?0.46:0.38);
-        else if (e instanceof Piglin)          setStats(e, n?38:28,   n?11:8,  n?0.40:0.32);
-        else if (e instanceof ElderGuardian)   setStats(e, n?175:130, n?22:16, n?0.30:0.25);
-        else if (e instanceof Guardian)        setStats(e, n?68:50,   n?14:10, n?0.30:0.25);
-        else if (e instanceof Blaze)           setStats(e, n?46:34,   n?11:8,  n?0.30:0.25);
-        else if (e instanceof Ghast)           setStats(e, n?18:14,   n?8:6,   n?0.30:0.25);
-        else if (e instanceof WitherSkeleton)  setStats(e, n?80:60,   n?16:12, n?0.36:0.30);
-        else if (e instanceof WitherBoss)      setStats(e, n?650:500, n?20:15, n?0.30:0.25);
-        else if (e instanceof EnderDragon)     setMaxHp(e, n?420:320);
-    }
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Главная логика распределения баффов
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void applyBuffs(LivingEntity living, boolean night) {
+        double mult = night ? NIGHT_MULT : DAY_MULT;
 
-    private void setStats(LivingEntity e, double hp, double dmg, double spd) {
-        setMaxHp(e, hp);
-        if (e.getAttribute(Attributes.ATTACK_DAMAGE) != null)
-            e.getAttribute(Attributes.ATTACK_DAMAGE).setBaseValue(dmg);
-        if (e.getAttribute(Attributes.MOVEMENT_SPEED) != null)
-            e.getAttribute(Attributes.MOVEMENT_SPEED).setBaseValue(spd);
-    }
-
-    private void setMaxHp(LivingEntity e, double hp) {
-        if (e.getAttribute(Attributes.MAX_HEALTH) != null) {
-            float cur = e.getHealth();
-            float curMax = e.getMaxHealth();
-            e.getAttribute(Attributes.MAX_HEALTH).setBaseValue(hp);
-            if (curMax > 0) {
-                float newHp = (float)(cur / curMax * hp);
-                e.setHealth(Math.max(newHp, cur));
-            }
+        // ── БОССЫ: только HP + урон, скорость неизменна ──────────────────────
+        if (living instanceof WitherBoss || living instanceof EnderDragon) {
+            setMaxHp(living, living.getMaxHealth() * BOSS_HP_MULT);
+            scaleDamage(living, BOSS_DAMAGE_MULT);
+            // скорость боссов намеренно не меняем
+            return;
         }
+
+        // ── ЛЕТАЮЩИЕ / ДАЛЬНОБОЙНЫЕ: только HP + урон, без скорости движения ─
+        // Гаст летает и атакует огненными шарами — скорость не масштабируем
+        // Иссушённый скелет / Скелет / Страй / Мародёр / Призыватель — стрелки
+        if (living instanceof Ghast
+         || living instanceof WitherSkeleton
+         || living instanceof Skeleton
+         || living instanceof Stray
+         || living instanceof Pillager
+         || living instanceof Evoker) {
+            setStats(living, mult, mult, 1.0 /* скорость = без изменений */);
+            return;
+        }
+
+        // ── БОЛЬШИЕ / МЕДЛЕННЫЕ МОБЫ: умеренное увеличение скорости ──────────
+        // Равагер и Elder Guardian изначально медленные — чуть меньше +скорость
+        if (living instanceof Ravager || living instanceof ElderGuardian) {
+            double speedMult = 1.0 + (mult - 1.0) * 0.5; // половина от общего множителя
+            setStats(living, mult, mult, speedMult);
+            return;
+        }
+
+        // ── ВОДНЫЕ МОБЫ: Утопленник, Страж — скорость в воде, пусть растёт чуть меньше
+        if (living instanceof Drowned || living instanceof Guardian) {
+            double speedMult = 1.0 + (mult - 1.0) * 0.7;
+            setStats(living, mult, mult, speedMult);
+            return;
+        }
+
+        // ── СТАНДАРТНЫЕ БЛИЖНИЕ МОБЫ: полный множитель ────────────────────────
+        // Zombie, Husk, Creeper, Spider, CaveSpider, EnderMan,
+        // Witch, Vindicator, ZombifiedPiglin, PiglinBrute, Piglin, Blaze
+        if (living instanceof Zombie
+         || living instanceof Husk
+         || living instanceof Creeper
+         || living instanceof Spider
+         || living instanceof CaveSpider
+         || living instanceof EnderMan
+         || living instanceof Witch
+         || living instanceof Vindicator
+         || living instanceof ZombifiedPiglin
+         || living instanceof PiglinBrute
+         || living instanceof Piglin
+         || living instanceof Blaze) {
+            setStats(living, mult, mult, mult);
+        }
+
+        // Всё остальное (кастомные мобы из других модов и т.д.) — не трогаем
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    //  Хелперы
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Устанавливает HP, урон и скорость с независимыми множителями.
+     * hpMult, damageMult, speedMult = 1.0 означает «без изменений».
+     */
+    private static void setStats(LivingEntity living,
+                                  double hpMult,
+                                  double damageMult,
+                                  double speedMult) {
+        // HP
+        if (hpMult != 1.0) {
+            setMaxHp(living, living.getMaxHealth() * hpMult);
+        }
+        // Урон
+        if (damageMult != 1.0) {
+            scaleDamage(living, damageMult);
+        }
+        // Скорость
+        if (speedMult != 1.0) {
+            scaleSpeed(living, speedMult);
+        }
+    }
+
+    /** Устанавливает максимальное HP и пропорционально восстанавливает текущее. */
+    private static void setMaxHp(LivingEntity living, double newMaxHp) {
+        AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
+        if (attr == null) return;
+
+        double oldMax = attr.getValue();
+        if (oldMax <= 0) return;
+
+        attr.setBaseValue(newMaxHp);
+
+        // Восстанавливаем текущее HP пропорционально, чтобы не «лечить» моба до полного
+        float newHp = (float) Math.min(
+            living.getHealth() * (newMaxHp / oldMax),
+            newMaxHp
+        );
+        living.setHealth(newHp);
+    }
+
+    /** Масштабирует базовый урон атаки. */
+    private static void scaleDamage(LivingEntity living, double mult) {
+        AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
+        if (attr == null) return;
+        attr.setBaseValue(attr.getBaseValue() * mult);
+    }
+
+    /** Масштабирует скорость передвижения. */
+    private static void scaleSpeed(LivingEntity living, double mult) {
+        AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
+        if (attr == null) return;
+        attr.setBaseValue(attr.getBaseValue() * mult);
     }
 }
