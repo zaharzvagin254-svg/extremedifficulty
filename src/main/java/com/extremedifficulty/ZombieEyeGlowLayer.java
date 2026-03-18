@@ -4,8 +4,8 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.model.ZombieModel;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.entity.RenderLayerParent;
 import net.minecraft.client.renderer.entity.layers.RenderLayer;
-import net.minecraft.client.renderer.entity.ZombieRenderer;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.monster.Zombie;
@@ -17,13 +17,11 @@ import net.minecraftforge.api.distmarker.OnlyIn;
 public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
         extends RenderLayer<T, M> {
 
-    // Текстура светящихся глаз — маска поверх стандартной текстуры зомби
-    // Файл: src/main/resources/assets/extremedifficulty/textures/entity/zombie_eyes.png
     private static final ResourceLocation ZOMBIE_EYES =
         new ResourceLocation("extremedifficulty", "textures/entity/zombie_eyes.png");
 
-    public ZombieEyeGlowLayer(ZombieRenderer renderer) {
-        super((net.minecraft.client.renderer.entity.RenderLayerParent<T, M>) renderer);
+    public ZombieEyeGlowLayer(RenderLayerParent<T, M> renderer) {
+        super(renderer);
     }
 
     @Override
@@ -38,28 +36,50 @@ public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
                        float netHeadYaw,
                        float headPitch) {
 
-        // Светимся только ночью (или в Незере/Крае)
-        Level level = zombie.level();
-        if (!shouldGlow(level)) return;
+        if (!shouldGlow(zombie.level())) return;
 
-        // FULL_BRIGHT — глаза светятся вне зависимости от освещения
-        // Это то же самое, что у эндермена или пауков
+        M model = this.getParentModel();
+
+        // Прячем все части модели кроме головы
+        boolean bodyVisible    = model.body.visible;
+        boolean headVisible    = model.head.visible;
+        boolean hatVisible    = model.hat.visible;
+        boolean rightArmVis   = model.rightArm.visible;
+        boolean leftArmVis    = model.leftArm.visible;
+        boolean rightLegVis   = model.rightLeg.visible;
+        boolean leftLegVis    = model.leftLeg.visible;
+
+        model.body.visible    = false;
+        model.rightArm.visible = false;
+        model.leftArm.visible  = false;
+        model.rightLeg.visible = false;
+        model.leftLeg.visible  = false;
+        model.hat.visible      = false;
+        model.head.visible     = true; // только голова
+
+        // Рендерим только голову с текстурой глаз на полной яркости
         var buffer = bufferSource.getBuffer(RenderType.eyes(ZOMBIE_EYES));
-
-        this.getParentModel().renderToBuffer(
+        model.renderToBuffer(
             poseStack,
             buffer,
-            15728640, // MAX_LIGHT — полная яркость
+            15728640, // MAX_LIGHT — полная яркость независимо от окружения
             OverlayTexture.NO_OVERLAY,
             1.0f, 1.0f, 1.0f, 1.0f
         );
+
+        // Восстанавливаем видимость всех частей
+        model.body.visible     = bodyVisible;
+        model.head.visible     = headVisible;
+        model.hat.visible      = hatVisible;
+        model.rightArm.visible = rightArmVis;
+        model.leftArm.visible  = leftArmVis;
+        model.rightLeg.visible = rightLegVis;
+        model.leftLeg.visible  = leftLegVis;
     }
 
     private static boolean shouldGlow(Level level) {
-        // Незер и Энд — всегда
         if (level.dimension() == Level.NETHER) return true;
         if (level.dimension() == Level.END)    return true;
-        // Верхний мир — только ночью
         long time = level.getDayTime() % 24000;
         return time >= 13000 && time <= 23000;
     }
