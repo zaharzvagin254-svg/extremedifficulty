@@ -1,5 +1,6 @@
 package com.extremedifficulty;
 
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -33,40 +34,37 @@ public class ExtremeDifficulty {
 
     private static final Logger LOGGER = LogManager.getLogger();
 
-    // ── Множители статов ─────────────────────────────────────────────────────
+    // NBT ключи
+    private static final String NBT_BUFFED    = "ed_buffed";
+    private static final String NBT_WAS_NIGHT = "ed_night";
+
+    // Множители статов
     private static final double DAY_MULT   = 1.50;
     private static final double NIGHT_MULT = 1.85;
 
-    // ── Боссы: только HP и урон ──────────────────────────────────────────────
+    // Боссы
     private static final double BOSS_HP_MULT     = 2.00;
     private static final double BOSS_DAMAGE_MULT = 1.60;
 
-    // ── Агрессия: радиус в блоках ────────────────────────────────────────────
-    private static final double DAY_AGGRO_RANGE   = 24.0; // днём видят дальше обычного (ванилла ~16)
-    private static final double NIGHT_AGGRO_RANGE = 40.0; // ночью — ещё дальше
+    // Агрессия
+    private static final double DAY_AGGRO_RANGE   = 24.0;
+    private static final double NIGHT_AGGRO_RANGE = 40.0;
 
     public ExtremeDifficulty() {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
 
-        // Регистрируем рендерер только на клиенте
         if (FMLEnvironment.dist == Dist.CLIENT) {
             modBus.addListener(this::onClientSetup);
         }
 
         MinecraftForge.EVENT_BUS.register(this);
-        LOGGER.info("[ExtremeDifficulty] Mod loaded! Mobs are now stronger and more aggressive.");
+        LOGGER.info("[ExtremeDifficulty] Mod loaded!");
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Клиентская инициализация — регистрируем кастомный рендерер зомби
-    // ─────────────────────────────────────────────────────────────────────────
     private void onClientSetup(FMLClientSetupEvent event) {
         event.enqueueWork(ClientSetup::registerRenderers);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  При появлении моба — применяем баффы и расширяем радиус агрессии
-    // ─────────────────────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onEntityJoin(EntityJoinLevelEvent event) {
         Entity entity = event.getEntity();
@@ -76,13 +74,10 @@ public class ExtremeDifficulty {
         if (level.isClientSide()) return;
 
         boolean night = isNight(level);
-        applyBuffs(living, night);
+        applyBuffsOnce(living, night);
         applyAggroRange(living, night);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Тик сервера — обновляем раз в 100 тиков (5 сек)
-    // ─────────────────────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onServerTick(TickEvent.LevelTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
@@ -92,18 +87,24 @@ public class ExtremeDifficulty {
         boolean night = isNight(serverLevel);
 
         serverLevel.getEntities().getAll().forEach(entity -> {
-            if (entity instanceof LivingEntity living) {
-                applyBuffs(living, night);
-                applyAggroRange(living, night);
+            if (!(entity instanceof LivingEntity living)) return;
+
+            applyAggroRange(living, night);
+
+            // Пересчитываем баффы только если время суток сменилось
+            CompoundTag tag = living.getPersistentData();
+            boolean wasNight = tag.getBoolean(NBT_WAS_NIGHT);
+            if (wasNight != night) {
+                tag.putBoolean(NBT_BUFFED, false);
+                applyBuffsOnce(living, night);
             }
         });
 
-        // ── Агрессия в радиусе: каждые 100 тиков ищем игроков поблизости ────
+        // Групповая агрессия
         double range = night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE;
-
         serverLevel.getEntities().getAll().forEach(entity -> {
             if (!(entity instanceof Mob mob)) return;
-            if (mob.getTarget() != null) return; // уже атакует кого-то
+            if (mob.getTarget() != null) return;
 
             List<Player> nearbyPlayers = serverLevel.getEntitiesOfClass(
                 Player.class,
@@ -112,54 +113,35 @@ public class ExtremeDifficulty {
             );
 
             if (!nearbyPlayers.isEmpty()) {
-                // Атакуем ближайшего игрока
                 Player nearest = nearbyPlayers.stream()
-                    .min((a, b) -> Double.compare(
-                        mob.distanceToSqr(a),
-                        mob.distanceToSqr(b)
-                    ))
+                    .min((a, b) -> Double.compare(mob.distanceToSqr(a), mob.distanceToSqr(b)))
                     .orElse(null);
-
-                if (nearest != null) {
-                    mob.setTarget(nearest);
-                }
+                if (nearest != null) mob.setTarget(nearest);
             }
         });
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Расширяем атрибут дальности преследования
-    // ─────────────────────────────────────────────────────────────────────────
-    private static void applyAggroRange(LivingEntity living, boolean night) {
-        if (!(living instanceof Mob mob)) return;
+    // ─── Применяем баффы ТОЛЬКО ОДИН РАЗ через NBT ───────────────────────────
+    private static void applyBuffsOnce(LivingEntity living, boolean night) {
+        CompoundTag tag = living.getPersistentData();
 
-        AttributeInstance attr = mob.getAttribute(Attributes.FOLLOW_RANGE);
-        if (attr == null) return;
+        if (tag.getBoolean(NBT_BUFFED) && tag.getBoolean(NBT_WAS_NIGHT) == night) {
+            return; // уже забафан при этом времени суток — пропускаем
+        }
 
-        double range = night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE;
-        attr.setBaseValue(range);
+        applyBuffs(living, night);
+
+        tag.putBoolean(NBT_BUFFED, true);
+        tag.putBoolean(NBT_WAS_NIGHT, night);
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Ночь / день
-    // ─────────────────────────────────────────────────────────────────────────
-    private static boolean isNight(Level level) {
-        if (level.dimension() == Level.NETHER) return true;
-        if (level.dimension() == Level.END)    return true;
-        long time = level.getDayTime() % 24000;
-        return time >= 13000 && time <= 23000;
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Распределение баффов по группам мобов
-    // ─────────────────────────────────────────────────────────────────────────
     private static void applyBuffs(LivingEntity living, boolean night) {
         double mult = night ? NIGHT_MULT : DAY_MULT;
 
         // Боссы
         if (living instanceof WitherBoss || living instanceof EnderDragon) {
-            setMaxHp(living, living.getMaxHealth() * BOSS_HP_MULT);
-            scaleDamage(living, BOSS_DAMAGE_MULT);
+            setMaxHp(living, getBaseMaxHp(living) * BOSS_HP_MULT);
+            setBaseDamage(living, getBaseDamage(living) * BOSS_DAMAGE_MULT);
             return;
         }
 
@@ -170,19 +152,26 @@ public class ExtremeDifficulty {
          || living instanceof Stray
          || living instanceof Pillager
          || living instanceof Evoker) {
-            setStats(living, mult, mult, 1.0);
+            setMaxHp(living, getBaseMaxHp(living) * mult);
+            setBaseDamage(living, getBaseDamage(living) * mult);
             return;
         }
 
         // Большие медленные
         if (living instanceof Ravager || living instanceof ElderGuardian) {
-            setStats(living, mult, mult, 1.0 + (mult - 1.0) * 0.5);
+            double speedMult = 1.0 + (mult - 1.0) * 0.5;
+            setMaxHp(living, getBaseMaxHp(living) * mult);
+            setBaseDamage(living, getBaseDamage(living) * mult);
+            setBaseSpeed(living, getBaseSpeed(living) * speedMult);
             return;
         }
 
         // Водные
         if (living instanceof Drowned || living instanceof Guardian) {
-            setStats(living, mult, mult, 1.0 + (mult - 1.0) * 0.7);
+            double speedMult = 1.0 + (mult - 1.0) * 0.7;
+            setMaxHp(living, getBaseMaxHp(living) * mult);
+            setBaseDamage(living, getBaseDamage(living) * mult);
+            setBaseSpeed(living, getBaseSpeed(living) * speedMult);
             return;
         }
 
@@ -199,39 +188,74 @@ public class ExtremeDifficulty {
          || living instanceof PiglinBrute
          || living instanceof Piglin
          || living instanceof Blaze) {
-            setStats(living, mult, mult, mult);
+            setMaxHp(living, getBaseMaxHp(living) * mult);
+            setBaseDamage(living, getBaseDamage(living) * mult);
+            setBaseSpeed(living, getBaseSpeed(living) * mult);
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-    //  Хелперы
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private static void setStats(LivingEntity living, double hpMult, double damageMult, double speedMult) {
-        if (hpMult != 1.0)     setMaxHp(living, living.getMaxHealth() * hpMult);
-        if (damageMult != 1.0) scaleDamage(living, damageMult);
-        if (speedMult != 1.0)  scaleSpeed(living, speedMult);
+    private static void applyAggroRange(LivingEntity living, boolean night) {
+        if (!(living instanceof Mob mob)) return;
+        AttributeInstance attr = mob.getAttribute(Attributes.FOLLOW_RANGE);
+        if (attr == null) return;
+        attr.setBaseValue(night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE);
     }
+
+    // ─── Геттеры оригинальных базовых значений (сохраняем в NBT при первом вызове) ───
+
+    private static double getBaseMaxHp(LivingEntity living) {
+        CompoundTag tag = living.getPersistentData();
+        if (!tag.contains("ed_base_hp")) {
+            AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
+            tag.putDouble("ed_base_hp", attr != null ? attr.getBaseValue() : living.getMaxHealth());
+        }
+        return tag.getDouble("ed_base_hp");
+    }
+
+    private static double getBaseDamage(LivingEntity living) {
+        CompoundTag tag = living.getPersistentData();
+        if (!tag.contains("ed_base_dmg")) {
+            AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
+            tag.putDouble("ed_base_dmg", attr != null ? attr.getBaseValue() : 2.0);
+        }
+        return tag.getDouble("ed_base_dmg");
+    }
+
+    private static double getBaseSpeed(LivingEntity living) {
+        CompoundTag tag = living.getPersistentData();
+        if (!tag.contains("ed_base_spd")) {
+            AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
+            tag.putDouble("ed_base_spd", attr != null ? attr.getBaseValue() : 0.23);
+        }
+        return tag.getDouble("ed_base_spd");
+    }
+
+    // ─── Сеттеры ─────────────────────────────────────────────────────────────
 
     private static void setMaxHp(LivingEntity living, double newMaxHp) {
         AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
         if (attr == null) return;
-        double oldMax = attr.getValue();
-        if (oldMax <= 0) return;
+        double oldMax = attr.getBaseValue();
         attr.setBaseValue(newMaxHp);
-        float newHp = (float) Math.min(living.getHealth() * (newMaxHp / oldMax), newMaxHp);
-        living.setHealth(newHp);
+        if (oldMax > 0) {
+            living.setHealth((float) Math.min(living.getHealth() * (newMaxHp / oldMax), newMaxHp));
+        }
     }
 
-    private static void scaleDamage(LivingEntity living, double mult) {
+    private static void setBaseDamage(LivingEntity living, double value) {
         AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
-        if (attr == null) return;
-        attr.setBaseValue(attr.getBaseValue() * mult);
+        if (attr != null) attr.setBaseValue(value);
     }
 
-    private static void scaleSpeed(LivingEntity living, double mult) {
+    private static void setBaseSpeed(LivingEntity living, double value) {
         AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
-        if (attr == null) return;
-        attr.setBaseValue(attr.getBaseValue() * mult);
+        if (attr != null) attr.setBaseValue(value);
+    }
+
+    private static boolean isNight(Level level) {
+        if (level.dimension() == Level.NETHER) return true;
+        if (level.dimension() == Level.END)    return true;
+        long time = level.getDayTime() % 24000;
+        return time >= 13000 && time <= 23000;
     }
 }
