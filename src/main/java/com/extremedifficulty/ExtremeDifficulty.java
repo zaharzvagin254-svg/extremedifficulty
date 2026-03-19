@@ -51,6 +51,9 @@ public class ExtremeDifficulty {
 
         ModSounds.SOUNDS.register(modBus);
 
+        // ФИХ БАГ 1: регистрируем сеть
+        ModNetwork.register();
+
         if (FMLEnvironment.dist == Dist.CLIENT) {
             modBus.addListener(this::onClientSetup);
         }
@@ -76,9 +79,10 @@ public class ExtremeDifficulty {
         applyBaseBuffsOnce(living, night);
         applyAggroRange(living, night);
 
-        // Если сейчас судная ночь — сразу бафаем нового моба
         if (level instanceof ServerLevel serverLevel) {
-            BloodMoonManager mgr = BloodMoonManager.get(serverLevel);
+            // Используем только Overworld для хранилища данных
+            ServerLevel overworld = serverLevel.getServer().overworld();
+            BloodMoonManager mgr = BloodMoonManager.get(overworld);
             if (mgr.isBloodMoonActive(serverLevel)) {
                 BloodMoonEvents.buffMobForBloodMoon(living, mgr.getBuffMult(), mgr.getBloodMoonCount());
             }
@@ -90,8 +94,11 @@ public class ExtremeDifficulty {
         if (event.phase != TickEvent.Phase.END) return;
         if (!(event.level instanceof ServerLevel serverLevel)) return;
 
-        long time = serverLevel.getDayTime() % 24000;
+        // ФИХ БАГ 3: судная ночь считается только по Overworld
+        // Нетер и Энд тоже получают баффы мобов, но счётчик ведём по Overworld
+        boolean isOverworld = serverLevel.dimension() == Level.OVERWORLD;
         boolean isNight = BloodMoonManager.isNight(serverLevel);
+        long time = serverLevel.getDayTime() % 24000;
 
         // Базовые баффы + агрессия — раз в 100 тиков
         if (serverLevel.getGameTime() % 100 == 0) {
@@ -99,8 +106,7 @@ public class ExtremeDifficulty {
                 if (!(entity instanceof LivingEntity living)) return;
                 applyAggroRange(living, isNight);
                 CompoundTag tag = living.getPersistentData();
-                boolean wasNight = tag.getBoolean(NBT_WAS_NIGHT);
-                if (wasNight != isNight) {
+                if (tag.getBoolean(NBT_WAS_NIGHT) != isNight) {
                     tag.putBoolean(NBT_BUFFED, false);
                     applyBaseBuffsOnce(living, isNight);
                 }
@@ -125,23 +131,29 @@ public class ExtremeDifficulty {
             });
         }
 
-        // Проверка судной ночи — раз в 20 тиков (1 сек), только ночью
-        if (serverLevel.getGameTime() % 20 == 0 && isNight) {
-            BloodMoonManager mgr = BloodMoonManager.get(serverLevel);
+        // ФИХ БАГ 3: судная ночь проверяется только в Overworld
+        if (isOverworld && serverLevel.getGameTime() % 20 == 0 && isNight) {
+            ServerLevel overworld = serverLevel.getServer().overworld();
+            BloodMoonManager mgr = BloodMoonManager.get(overworld);
             boolean isBloodMoon = mgr.onNightTick(serverLevel);
             if (isBloodMoon) {
-                BloodMoonEvents.buffAllMobsForBloodMoon(serverLevel, mgr);
+                // Бафаем мобов во ВСЕХ измерениях
+                for (ServerLevel dim : serverLevel.getServer().getAllLevels()) {
+                    BloodMoonEvents.buffAllMobsForBloodMoon(dim, mgr);
+                }
                 BloodMoonEvents.announceBloodMoon(serverLevel, mgr);
             }
         }
 
-        // Сброс флага при рассвете
-        if (time >= 1000 && time <= 1020 && serverLevel.getGameTime() % 20 == 0) {
-            BloodMoonManager.get(serverLevel).onDayBegins();
+        // Сброс флага при рассвете (только Overworld)
+        if (isOverworld && time >= 1000 && time <= 1020 && serverLevel.getGameTime() % 20 == 0) {
+            BloodMoonManager.get(serverLevel.getServer().overworld()).onDayBegins();
+            // Снимаем эффект с клиентов
+            ModNetwork.sendToAll(false);
         }
     }
 
-    // ─── Базовый бафф ─────────────────────────────────────────────────────────
+    // ─── Базовый бафф день/ночь ───────────────────────────────────────────────
 
     private static void applyBaseBuffsOnce(LivingEntity living, boolean night) {
         CompoundTag tag = living.getPersistentData();
@@ -198,7 +210,7 @@ public class ExtremeDifficulty {
 
     // ─── Геттеры базы из NBT ──────────────────────────────────────────────────
 
-    private static double getBaseMaxHp(LivingEntity living) {
+    static double getBaseMaxHp(LivingEntity living) {
         CompoundTag tag = living.getPersistentData();
         if (!tag.contains("ed_base_hp")) {
             AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
@@ -207,7 +219,7 @@ public class ExtremeDifficulty {
         return tag.getDouble("ed_base_hp");
     }
 
-    private static double getBaseDamage(LivingEntity living) {
+    static double getBaseDamage(LivingEntity living) {
         CompoundTag tag = living.getPersistentData();
         if (!tag.contains("ed_base_dmg")) {
             AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
@@ -216,7 +228,7 @@ public class ExtremeDifficulty {
         return tag.getDouble("ed_base_dmg");
     }
 
-    private static double getBaseSpeed(LivingEntity living) {
+    static double getBaseSpeed(LivingEntity living) {
         CompoundTag tag = living.getPersistentData();
         if (!tag.contains("ed_base_spd")) {
             AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
@@ -227,7 +239,7 @@ public class ExtremeDifficulty {
 
     // ─── Сеттеры ─────────────────────────────────────────────────────────────
 
-    private static void setMaxHp(LivingEntity living, double newMaxHp) {
+    static void setMaxHp(LivingEntity living, double newMaxHp) {
         AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
         if (attr == null) return;
         double oldMax = attr.getBaseValue();
@@ -236,12 +248,12 @@ public class ExtremeDifficulty {
             living.setHealth((float) Math.min(living.getHealth() * (newMaxHp / oldMax), newMaxHp));
     }
 
-    private static void setBaseDamage(LivingEntity living, double value) {
+    static void setBaseDamage(LivingEntity living, double value) {
         AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
         if (attr != null) attr.setBaseValue(value);
     }
 
-    private static void setBaseSpeed(LivingEntity living, double value) {
+    static void setBaseSpeed(LivingEntity living, double value) {
         AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
         if (attr != null) attr.setBaseValue(value);
     }
