@@ -1,17 +1,11 @@
 package com.extremedifficulty;
 
-import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
-import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
-import net.minecraft.world.entity.boss.wither.WitherBoss;
-import net.minecraft.world.entity.monster.*;
-import net.minecraft.world.entity.monster.piglin.Piglin;
-import net.minecraft.world.entity.monster.piglin.PiglinBrute;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.api.distmarker.Dist;
@@ -34,15 +28,6 @@ public class ExtremeDifficulty {
 
     private static final Logger LOGGER = LogManager.getLogger();
 
-    private static final String NBT_BUFFED    = "ed_buffed";
-    private static final String NBT_WAS_NIGHT = "ed_night";
-
-    private static final double DAY_MULT   = 1.50;
-    private static final double NIGHT_MULT = 1.85;
-
-    private static final double BOSS_HP_MULT     = 2.00;
-    private static final double BOSS_DAMAGE_MULT = 1.60;
-
     private static final double DAY_AGGRO_RANGE   = 24.0;
     private static final double NIGHT_AGGRO_RANGE = 40.0;
 
@@ -50,8 +35,6 @@ public class ExtremeDifficulty {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
 
         ModSounds.SOUNDS.register(modBus);
-
-        // ФИХ БАГ 1: регистрируем сеть
         ModNetwork.register();
 
         if (FMLEnvironment.dist == Dist.CLIENT) {
@@ -68,6 +51,7 @@ public class ExtremeDifficulty {
         event.enqueueWork(ClientSetup::registerRenderers);
     }
 
+    // ─── Спаун моба ───────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onEntityJoin(EntityJoinLevelEvent event) {
         Entity entity = event.getEntity();
@@ -75,12 +59,11 @@ public class ExtremeDifficulty {
         if (!(entity instanceof LivingEntity living)) return;
         if (level.isClientSide()) return;
 
-        boolean night = BloodMoonManager.isNight(level);
-        applyBaseBuffsOnce(living, night);
-        applyAggroRange(living, night);
+        // Только агрессия — никаких базовых баффов
+        applyAggroRange(living, BloodMoonManager.isNight(level));
 
+        // Если сейчас судная ночь — бафаем нового моба
         if (level instanceof ServerLevel serverLevel) {
-            // Используем только Overworld для хранилища данных
             ServerLevel overworld = serverLevel.getServer().overworld();
             BloodMoonManager mgr = BloodMoonManager.get(overworld);
             if (mgr.isBloodMoonActive(serverLevel)) {
@@ -89,27 +72,21 @@ public class ExtremeDifficulty {
         }
     }
 
+    // ─── Тик сервера ──────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onServerTick(TickEvent.LevelTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
         if (!(event.level instanceof ServerLevel serverLevel)) return;
 
-        // ФИХ БАГ 3: судная ночь считается только по Overworld
-        // Нетер и Энд тоже получают баффы мобов, но счётчик ведём по Overworld
         boolean isOverworld = serverLevel.dimension() == Level.OVERWORLD;
         boolean isNight = BloodMoonManager.isNight(serverLevel);
         long time = serverLevel.getDayTime() % 24000;
 
-        // Базовые баффы + агрессия — раз в 100 тиков
+        // Агрессия — раз в 100 тиков
         if (serverLevel.getGameTime() % 100 == 0) {
             serverLevel.getEntities().getAll().forEach(entity -> {
-                if (!(entity instanceof LivingEntity living)) return;
-                applyAggroRange(living, isNight);
-                CompoundTag tag = living.getPersistentData();
-                if (tag.getBoolean(NBT_WAS_NIGHT) != isNight) {
-                    tag.putBoolean(NBT_BUFFED, false);
-                    applyBaseBuffsOnce(living, isNight);
-                }
+                if (entity instanceof LivingEntity living)
+                    applyAggroRange(living, isNight);
             });
 
             // Групповая агрессия
@@ -131,13 +108,12 @@ public class ExtremeDifficulty {
             });
         }
 
-        // ФИХ БАГ 3: судная ночь проверяется только в Overworld
+        // Проверка судной ночи — только в Overworld, раз в секунду
         if (isOverworld && serverLevel.getGameTime() % 20 == 0 && isNight) {
             ServerLevel overworld = serverLevel.getServer().overworld();
             BloodMoonManager mgr = BloodMoonManager.get(overworld);
             boolean isBloodMoon = mgr.onNightTick(serverLevel);
             if (isBloodMoon) {
-                // Бафаем мобов во ВСЕХ измерениях
                 for (ServerLevel dim : serverLevel.getServer().getAllLevels()) {
                     BloodMoonEvents.buffAllMobsForBloodMoon(dim, mgr);
                 }
@@ -145,60 +121,10 @@ public class ExtremeDifficulty {
             }
         }
 
-        // Сброс флага при рассвете (только Overworld)
+        // Сброс флага при рассвете
         if (isOverworld && time >= 1000 && time <= 1020 && serverLevel.getGameTime() % 20 == 0) {
             BloodMoonManager.get(serverLevel.getServer().overworld()).onDayBegins();
-            // Снимаем эффект с клиентов
             ModNetwork.sendToAll(false);
-        }
-    }
-
-    // ─── Базовый бафф день/ночь ───────────────────────────────────────────────
-
-    private static void applyBaseBuffsOnce(LivingEntity living, boolean night) {
-        CompoundTag tag = living.getPersistentData();
-        if (tag.getBoolean(NBT_BUFFED) && tag.getBoolean(NBT_WAS_NIGHT) == night) return;
-        applyBaseBuffs(living, night);
-        tag.putBoolean(NBT_BUFFED, true);
-        tag.putBoolean(NBT_WAS_NIGHT, night);
-    }
-
-    private static void applyBaseBuffs(LivingEntity living, boolean night) {
-        double mult = night ? NIGHT_MULT : DAY_MULT;
-
-        if (living instanceof WitherBoss || living instanceof EnderDragon) {
-            setMaxHp(living, getBaseMaxHp(living) * BOSS_HP_MULT);
-            setBaseDamage(living, getBaseDamage(living) * BOSS_DAMAGE_MULT);
-            return;
-        }
-        if (living instanceof Ghast || living instanceof WitherSkeleton
-         || living instanceof Skeleton || living instanceof Stray
-         || living instanceof Pillager || living instanceof Evoker) {
-            setMaxHp(living, getBaseMaxHp(living) * mult);
-            setBaseDamage(living, getBaseDamage(living) * mult);
-            return;
-        }
-        if (living instanceof Ravager || living instanceof ElderGuardian) {
-            setMaxHp(living, getBaseMaxHp(living) * mult);
-            setBaseDamage(living, getBaseDamage(living) * mult);
-            setBaseSpeed(living, getBaseSpeed(living) * (1.0 + (mult - 1.0) * 0.5));
-            return;
-        }
-        if (living instanceof Drowned || living instanceof Guardian) {
-            setMaxHp(living, getBaseMaxHp(living) * mult);
-            setBaseDamage(living, getBaseDamage(living) * mult);
-            setBaseSpeed(living, getBaseSpeed(living) * (1.0 + (mult - 1.0) * 0.7));
-            return;
-        }
-        if (living instanceof Zombie || living instanceof Husk
-         || living instanceof Creeper || living instanceof Spider
-         || living instanceof CaveSpider || living instanceof EnderMan
-         || living instanceof Witch || living instanceof Vindicator
-         || living instanceof ZombifiedPiglin || living instanceof PiglinBrute
-         || living instanceof Piglin || living instanceof Blaze) {
-            setMaxHp(living, getBaseMaxHp(living) * mult);
-            setBaseDamage(living, getBaseDamage(living) * mult);
-            setBaseSpeed(living, getBaseSpeed(living) * mult);
         }
     }
 
@@ -208,10 +134,11 @@ public class ExtremeDifficulty {
         if (attr != null) attr.setBaseValue(night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE);
     }
 
-    // ─── Геттеры базы из NBT ──────────────────────────────────────────────────
+    // ─── Геттеры базовых значений из NBT ─────────────────────────────────────
+    // (используются в BloodMoonEvents для расчёта баффов от оригинала)
 
     static double getBaseMaxHp(LivingEntity living) {
-        CompoundTag tag = living.getPersistentData();
+        var tag = living.getPersistentData();
         if (!tag.contains("ed_base_hp")) {
             AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
             tag.putDouble("ed_base_hp", attr != null ? attr.getBaseValue() : living.getMaxHealth());
@@ -220,7 +147,7 @@ public class ExtremeDifficulty {
     }
 
     static double getBaseDamage(LivingEntity living) {
-        CompoundTag tag = living.getPersistentData();
+        var tag = living.getPersistentData();
         if (!tag.contains("ed_base_dmg")) {
             AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
             tag.putDouble("ed_base_dmg", attr != null ? attr.getBaseValue() : 2.0);
@@ -229,15 +156,13 @@ public class ExtremeDifficulty {
     }
 
     static double getBaseSpeed(LivingEntity living) {
-        CompoundTag tag = living.getPersistentData();
+        var tag = living.getPersistentData();
         if (!tag.contains("ed_base_spd")) {
             AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
             tag.putDouble("ed_base_spd", attr != null ? attr.getBaseValue() : 0.23);
         }
         return tag.getDouble("ed_base_spd");
     }
-
-    // ─── Сеттеры ─────────────────────────────────────────────────────────────
 
     static void setMaxHp(LivingEntity living, double newMaxHp) {
         AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
