@@ -10,6 +10,7 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.event.RegisterCommandsEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.eventbus.api.IEventBus;
@@ -51,6 +52,13 @@ public class ExtremeDifficulty {
         event.enqueueWork(ClientSetup::registerRenderers);
     }
 
+    // ─── Регистрация команд ───────────────────────────────────────────────────
+    @SubscribeEvent
+    public void onRegisterCommands(RegisterCommandsEvent event) {
+        BloodMoonCommand.register(event.getDispatcher());
+        LOGGER.info("[ExtremeDifficulty] Commands registered: /bloodmoon force|status|reset");
+    }
+
     // ─── Спаун моба ───────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onEntityJoin(EntityJoinLevelEvent event) {
@@ -59,10 +67,8 @@ public class ExtremeDifficulty {
         if (!(entity instanceof LivingEntity living)) return;
         if (level.isClientSide()) return;
 
-        // Только агрессия — никаких базовых баффов
         applyAggroRange(living, BloodMoonManager.isNight(level));
 
-        // Если сейчас судная ночь — бафаем нового моба
         if (level instanceof ServerLevel serverLevel) {
             ServerLevel overworld = serverLevel.getServer().overworld();
             BloodMoonManager mgr = BloodMoonManager.get(overworld);
@@ -108,7 +114,7 @@ public class ExtremeDifficulty {
             });
         }
 
-        // Проверка судной ночи — только в Overworld, раз в секунду
+        // Проверка судной ночи — только Overworld, раз в секунду
         if (isOverworld && serverLevel.getGameTime() % 20 == 0 && isNight) {
             ServerLevel overworld = serverLevel.getServer().overworld();
             BloodMoonManager mgr = BloodMoonManager.get(overworld);
@@ -121,21 +127,20 @@ public class ExtremeDifficulty {
             }
         }
 
-        // Сброс флага при рассвете
+        // Сброс при рассвете
         if (isOverworld && time >= 1000 && time <= 1020 && serverLevel.getGameTime() % 20 == 0) {
             BloodMoonManager.get(serverLevel.getServer().overworld()).onDayBegins();
             ModNetwork.sendToAll(false);
         }
     }
 
+    // ─── Хелперы ─────────────────────────────────────────────────────────────
+
     private static void applyAggroRange(LivingEntity living, boolean night) {
         if (!(living instanceof Mob mob)) return;
         AttributeInstance attr = mob.getAttribute(Attributes.FOLLOW_RANGE);
         if (attr != null) attr.setBaseValue(night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE);
     }
-
-    // ─── Геттеры базовых значений из NBT ─────────────────────────────────────
-    // (используются в BloodMoonEvents для расчёта баффов от оригинала)
 
     static double getBaseMaxHp(LivingEntity living) {
         var tag = living.getPersistentData();
