@@ -7,10 +7,6 @@ import net.minecraft.world.level.saveddata.SavedData;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-/**
- * Персистентные данные мода.
- * ВАЖНО: всегда получать через getOverworld() — данные хранятся только там.
- */
 public class BloodMoonManager extends SavedData {
 
     private static final Logger LOGGER = LogManager.getLogger();
@@ -27,10 +23,6 @@ public class BloodMoonManager extends SavedData {
 
     // ─── SavedData API ────────────────────────────────────────────────────────
 
-    /**
-     * ФИХ БАГ 3: всегда вызывать с overworld!
-     * BloodMoonManager.get(serverLevel.getServer().overworld())
-     */
     public static BloodMoonManager get(ServerLevel overworldLevel) {
         return overworldLevel.getDataStorage().computeIfAbsent(
             BloodMoonManager::load,
@@ -57,17 +49,11 @@ public class BloodMoonManager extends SavedData {
         return tag;
     }
 
-    // ─── Логика ───────────────────────────────────────────────────────────────
+    // ─── Обычная логика ───────────────────────────────────────────────────────
 
-    /**
-     * Вызывается каждую секунду ночью в Overworld.
-     * Возвращает true если только что наступила судная ночь.
-     */
     public boolean onNightTick(ServerLevel overworldLevel) {
         if (nightHandled) return false;
-
-        int moonPhase = overworldLevel.getMoonPhase();
-        if (moonPhase != 0) return false;
+        if (overworldLevel.getMoonPhase() != 0) return false;
 
         fullMoonCount++;
         nightHandled = true;
@@ -93,17 +79,38 @@ public class BloodMoonManager extends SavedData {
         }
     }
 
-    /**
-     * Активна ли судная ночь прямо сейчас.
-     * level может быть любым измерением — проверяем ночь по нему.
-     */
     public boolean isBloodMoonActive(ServerLevel level) {
         if (!isNight(level)) return false;
-        // Полнолуние В OVERWORLD (фаза луны синхронизирована с overworld)
         return level.getServer().overworld().getMoonPhase() == 0
             && fullMoonCount > 0
             && fullMoonCount % FULL_MOONS_PER_BLOOD_MOON == 0;
     }
+
+    // ─── Команды ─────────────────────────────────────────────────────────────
+
+    /** /bloodmoon force — принудительно вызвать судную ночь */
+    public void forceBloodMoon() {
+        // Симулируем достижение следующего порога полнолуний
+        int nextThreshold = ((fullMoonCount / FULL_MOONS_PER_BLOOD_MOON) + 1) * FULL_MOONS_PER_BLOOD_MOON;
+        fullMoonCount = nextThreshold;
+        bloodMoonCount++;
+        buffMult = Math.min(buffMult + BUFF_PER_BLOOD_MOON, MAX_BUFF_MULT);
+        nightHandled = true; // помечаем как обработанную чтобы не сработало повторно
+        setDirty();
+        LOGGER.info("[ExtremeDifficulty] Blood moon FORCED — #{}, mult x{}", bloodMoonCount, buffMult);
+    }
+
+    /** /bloodmoon reset — сбросить все счётчики */
+    public void reset() {
+        fullMoonCount  = 0;
+        bloodMoonCount = 0;
+        buffMult       = 1.0;
+        nightHandled   = false;
+        setDirty();
+        LOGGER.info("[ExtremeDifficulty] All counters reset");
+    }
+
+    // ─── Геттеры ─────────────────────────────────────────────────────────────
 
     public double getBuffMult()      { return buffMult; }
     public int getBloodMoonCount()   { return bloodMoonCount; }
