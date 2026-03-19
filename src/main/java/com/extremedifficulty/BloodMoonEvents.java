@@ -1,13 +1,11 @@
 package com.extremedifficulty;
 
 import net.minecraft.network.chat.Component;
-import net.minecraft.network.protocol.game.ClientboundGameEventPacket;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.sounds.SoundSource;
-import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
-import net.minecraft.world.entity.Mob;
+import net.minecraft.world.entity.ai.attributes.Attribute;
 import net.minecraft.world.entity.ai.attributes.AttributeInstance;
 import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.boss.enderdragon.EnderDragon;
@@ -26,11 +24,9 @@ import org.apache.logging.log4j.Logger;
 public class BloodMoonEvents {
 
     private static final Logger LOGGER = LogManager.getLogger();
-
-    // Ключ в NBT — при какой судной ночи моб был забафан последний раз
     private static final String NBT_BLOOD_MOON_IDX = "ed_bm_index";
 
-    // ─── Запрет сна в судную ночь ─────────────────────────────────────────────
+    // ─── Запрет сна ───────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onPlayerSleep(PlayerSleepInBedEvent event) {
         Player player = event.getEntity();
@@ -38,91 +34,85 @@ public class BloodMoonEvents {
         if (level.isClientSide()) return;
         if (!(level instanceof ServerLevel serverLevel)) return;
 
-        BloodMoonManager mgr = BloodMoonManager.get(serverLevel);
-        if (mgr.isBloodMoonActive(serverLevel)) {
-            // Запрещаем сон — отправляем причину
-            event.setResult(Player.BedSleepingProblem.OTHER_PROBLEM);
+        ServerLevel overworld = serverLevel.getServer().overworld();
+        BloodMoonManager mgr = BloodMoonManager.get(overworld);
 
-            // Сообщение игроку
+        if (mgr.isBloodMoonActive(serverLevel)) {
+            event.setResult(Player.BedSleepingProblem.OTHER_PROBLEM);
             player.displayClientMessage(
                 Component.literal("§4Судная ночь. Нежить не даст тебе спать..."),
-                true // actionbar
+                true
             );
         }
     }
 
-    // ─── Бафф всех мобов при наступлении судной ночи ─────────────────────────
+    // ─── Бафф всех мобов в измерении ─────────────────────────────────────────
     public static void buffAllMobsForBloodMoon(ServerLevel level, BloodMoonManager mgr) {
         int currentBloodMoon = mgr.getBloodMoonCount();
         double buffMult = mgr.getBuffMult();
 
         level.getEntities().getAll().forEach(entity -> {
-            if (!(entity instanceof LivingEntity living)) return;
-            buffMobForBloodMoon(living, buffMult, currentBloodMoon);
+            if (entity instanceof LivingEntity living) {
+                buffMobForBloodMoon(living, buffMult, currentBloodMoon);
+            }
         });
-
-        LOGGER.info("[ExtremeDifficulty] Buffed all mobs for blood moon #{}, mult=x{}", currentBloodMoon, buffMult);
     }
 
     /**
-     * Применяет бафф судной ночи к конкретному мобу.
-     * Вызывается и при спауне (для новых мобов) и при наступлении судной ночи.
+     * ФИХ БАГ 5: бафф считается от БАЗОВЫХ значений (NBT), а не от текущих.
+     * Это гарантирует что каждая судная ночь добавляет ровно +15% от базы,
+     * независимо от того какой базовый бафф (день/ночь) уже применён.
      */
     public static void buffMobForBloodMoon(LivingEntity living, double buffMult, int bloodMoonIndex) {
         CompoundTag tag = living.getPersistentData();
-
-        // Уже забафан на эту судную ночь — пропускаем
         if (tag.getInt(NBT_BLOOD_MOON_IDX) >= bloodMoonIndex) return;
 
-        // Применяем бафф поверх базовых значений
         applyBloodMoonBuffs(living, buffMult);
-
         tag.putInt(NBT_BLOOD_MOON_IDX, bloodMoonIndex);
     }
 
-    // ─── Логика баффов по группам ─────────────────────────────────────────────
     private static void applyBloodMoonBuffs(LivingEntity living, double mult) {
 
-        // Боссы — только HP и урон, скорость не трогаем
+        // Боссы — только HP и урон от базы
         if (living instanceof WitherBoss || living instanceof EnderDragon) {
-            scaleAttribute(living, Attributes.MAX_HEALTH, mult);
-            scaleAttribute(living, Attributes.ATTACK_DAMAGE, mult);
-            healToMax(living);
+            setFromBase(living, Attributes.MAX_HEALTH,     mult);
+            setFromBase(living, Attributes.ATTACK_DAMAGE,  mult);
+            living.setHealth(living.getMaxHealth());
             return;
         }
 
-        // Летающие / дальнобойные — HP и урон, без скорости
+        // Летающие / дальнобойные — без скорости
         if (living instanceof Ghast
          || living instanceof WitherSkeleton
          || living instanceof Skeleton
          || living instanceof Stray
          || living instanceof Pillager
          || living instanceof Evoker) {
-            scaleAttribute(living, Attributes.MAX_HEALTH, mult);
-            scaleAttribute(living, Attributes.ATTACK_DAMAGE, mult);
-            healToMax(living);
+            setFromBase(living, Attributes.MAX_HEALTH,    mult);
+            setFromBase(living, Attributes.ATTACK_DAMAGE, mult);
+            living.setHealth(living.getMaxHealth());
             return;
         }
 
-        // Большие медленные — скорость растёт меньше
+        // Большие медленные
         if (living instanceof Ravager || living instanceof ElderGuardian) {
-            scaleAttribute(living, Attributes.MAX_HEALTH, mult);
-            scaleAttribute(living, Attributes.ATTACK_DAMAGE, mult);
-            scaleAttribute(living, Attributes.MOVEMENT_SPEED, 1.0 + (mult - 1.0) * 0.4);
-            healToMax(living);
+            setFromBase(living, Attributes.MAX_HEALTH,     mult);
+            setFromBase(living, Attributes.ATTACK_DAMAGE,  mult);
+            setFromBase(living, Attributes.MOVEMENT_SPEED, 1.0 + (mult - 1.0) * 0.4);
+            living.setHealth(living.getMaxHealth());
             return;
         }
 
         // Водные
         if (living instanceof Drowned || living instanceof Guardian) {
-            scaleAttribute(living, Attributes.MAX_HEALTH, mult);
-            scaleAttribute(living, Attributes.ATTACK_DAMAGE, mult);
-            scaleAttribute(living, Attributes.MOVEMENT_SPEED, 1.0 + (mult - 1.0) * 0.6);
-            healToMax(living);
+            setFromBase(living, Attributes.MAX_HEALTH,     mult);
+            setFromBase(living, Attributes.ATTACK_DAMAGE,  mult);
+            setFromBase(living, Attributes.MOVEMENT_SPEED, 1.0 + (mult - 1.0) * 0.6);
+            living.setHealth(living.getMaxHealth());
             return;
         }
 
-        // Стандартные ближние — полный бафф
+        // Стандартные ближние
         if (living instanceof Zombie
          || living instanceof Husk
          || living instanceof Creeper
@@ -135,32 +125,42 @@ public class BloodMoonEvents {
          || living instanceof PiglinBrute
          || living instanceof Piglin
          || living instanceof Blaze) {
-            scaleAttribute(living, Attributes.MAX_HEALTH, mult);
-            scaleAttribute(living, Attributes.ATTACK_DAMAGE, mult);
-            scaleAttribute(living, Attributes.MOVEMENT_SPEED, mult);
-            healToMax(living);
+            setFromBase(living, Attributes.MAX_HEALTH,     mult);
+            setFromBase(living, Attributes.ATTACK_DAMAGE,  mult);
+            setFromBase(living, Attributes.MOVEMENT_SPEED, mult);
+            living.setHealth(living.getMaxHealth());
         }
     }
 
-    // ─── Хелперы ─────────────────────────────────────────────────────────────
-
-    /** Умножает атрибут на mult (от текущего базового значения) */
-    private static void scaleAttribute(LivingEntity living,
-                                        net.minecraft.world.entity.ai.attributes.Attribute attribute,
-                                        double mult) {
+    /**
+     * ФИХ БАГ 5: устанавливает атрибут как base_value * mult.
+     * Использует сохранённое в NBT оригинальное базовое значение —
+     * НЕ умножает поверх текущего (это был источник накопления).
+     */
+    private static void setFromBase(LivingEntity living, Attribute attribute, double mult) {
         AttributeInstance attr = living.getAttribute(attribute);
         if (attr == null) return;
-        attr.setBaseValue(attr.getBaseValue() * mult);
+
+        double baseValue;
+        if (attribute == Attributes.MAX_HEALTH) {
+            baseValue = ExtremeDifficulty.getBaseMaxHp(living);
+        } else if (attribute == Attributes.ATTACK_DAMAGE) {
+            baseValue = ExtremeDifficulty.getBaseDamage(living);
+        } else if (attribute == Attributes.MOVEMENT_SPEED) {
+            baseValue = ExtremeDifficulty.getBaseSpeed(living);
+        } else {
+            baseValue = attr.getBaseValue();
+        }
+
+        attr.setBaseValue(baseValue * mult);
     }
 
-    /** Восстанавливает HP до нового максимума после изменения */
-    private static void healToMax(LivingEntity living) {
-        living.setHealth(living.getMaxHealth());
-    }
-
-    // ─── Объявление судной ночи всем игрокам ─────────────────────────────────
+    // ─── Объявление судной ночи ───────────────────────────────────────────────
     public static void announceBloodMoon(ServerLevel level, BloodMoonManager mgr) {
-        for (ServerPlayer player : level.players()) {
+        // ФИХ БАГ 2: отправляем пакет всем клиентам чтобы включить красный фильтр
+        ModNetwork.sendToAll(true);
+
+        for (ServerPlayer player : level.getServer().getPlayerList().getPlayers()) {
             // Title на экране
             player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTitleTextPacket(
                 Component.literal("§4☽ Кровавая Луна ☾")
@@ -169,17 +169,18 @@ public class BloodMoonEvents {
                 Component.literal("§cСудная ночь #" + mgr.getBloodMoonCount() + " — нежить стала сильнее")
             ));
             player.connection.send(new net.minecraft.network.protocol.game.ClientboundSetTitlesAnimationPacket(
-                20, 80, 20  // fadeIn, stay, fadeOut в тиках
+                20, 80, 20
             ));
 
-            // Звук колоколов (кастомный)
-            player.level().playSound(
+            // ФИХ БАГ 4: звук играем напрямую у каждого игрока через его позицию
+            // чтобы все слышали независимо от расстояния между игроками
+            player.serverLevel().playSound(
                 null,
                 player.getX(), player.getY(), player.getZ(),
                 ModSounds.BLOOD_MOON_BELL.get(),
                 SoundSource.AMBIENT,
-                1.5f, // громкость
-                1.0f  // pitch
+                64.0f,  // очень большой радиус — слышно везде
+                1.0f
             );
         }
     }
