@@ -32,14 +32,13 @@ import net.minecraftforge.eventbus.api.SubscribeEvent;
 
 public class SoundSystem {
 
-    // Sound radii
-    public static final double R_FOOTSTEP     = 10.0; // updated
+    public static final double R_FOOTSTEP     = 10.0;
     public static final double R_INTERACT     = 10.0;
     public static final double R_BLOCK_EDIT   = 10.0;
     public static final double R_WEAPON_HIT   = 6.0;
     public static final double R_DEATH        = 12.0;
     public static final double R_FALL         = 10.0;
-    public static final double R_ARROW_IMPACT = 10.0; // updated
+    public static final double R_ARROW_IMPACT = 10.0;
     public static final double R_POTION_FOOD  = 6.0;
     public static final double R_FIRE         = 7.0;
     public static final double R_EXPLOSION    = 50.0;
@@ -54,13 +53,12 @@ public class SoundSystem {
         Entity proj = event.getEntity();
         if (proj.level().isClientSide()) return;
         if (!(proj.level() instanceof ServerLevel sl)) return;
-        double radius = 0;
-        if (proj instanceof AbstractArrow)    radius = R_ARROW_IMPACT;
-        else if (proj instanceof ThrownTrident) radius = R_ARROW_IMPACT;
-        if (radius == 0) return;
-        Entity owner = proj instanceof AbstractArrow a ? a.getOwner()
-                     : proj instanceof ThrownTrident t ? t.getOwner() : null;
-        triggerSound(sl, proj.position(), radius, owner);
+        boolean isArrow   = proj instanceof AbstractArrow;
+        boolean isTrident = proj instanceof ThrownTrident;
+        if (!isArrow && !isTrident) return;
+        Entity owner = isArrow ? ((AbstractArrow) proj).getOwner()
+                               : ((ThrownTrident) proj).getOwner();
+        triggerSound(sl, proj.position(), R_ARROW_IMPACT, owner);
     }
 
     // Melee hit
@@ -69,8 +67,10 @@ public class SoundSystem {
         LivingEntity victim = event.getEntity();
         if (victim.level().isClientSide()) return;
         if (!(victim.level() instanceof ServerLevel sl)) return;
+        // Use direct cast - getEntity() on source returns Entity not Player
         Entity attacker = event.getSource().getEntity();
-        if (!(attacker instanceof Player player)) return;
+        if (!(attacker instanceof Player)) return;
+        Player player = (Player) attacker;
         triggerSound(sl, victim.position(), R_WEAPON_HIT, player);
     }
 
@@ -88,7 +88,9 @@ public class SoundSystem {
     public void onLivingFall(LivingFallEvent event) {
         LivingEntity entity = event.getEntity();
         if (entity.level().isClientSide()) return;
-        if (!(entity instanceof Player player)) return;
+        // Use direct cast - getEntity() returns LivingEntity, check if Player
+        if (!(entity instanceof Player)) return;
+        Player player = (Player) entity;
         if (!(player.level() instanceof ServerLevel sl)) return;
         if (event.getDistance() <= 3.0f) return;
         BlockState bs = sl.getBlockState(player.blockPosition().below());
@@ -104,6 +106,8 @@ public class SoundSystem {
     public void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
+        if (event.getUseBlock() == net.minecraftforge.eventbus.api.Event.Result.DENY) return;
+        // getEntity() on PlayerInteractEvent always returns Player
         triggerSound(sl, event.getEntity().position(), R_INTERACT, event.getEntity());
     }
 
@@ -111,7 +115,9 @@ public class SoundSystem {
     @SubscribeEvent
     public void onBlockBreak(BlockEvent.BreakEvent event) {
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
-        if (!(event.getPlayer() instanceof Player player)) return;
+        // getPlayer() on BreakEvent returns Player directly (not subtype check needed)
+        Player player = event.getPlayer();
+        if (player == null) return;
         triggerSound(sl, Vec3.atCenterOf(event.getPos()), R_BLOCK_EDIT, player);
     }
 
@@ -119,7 +125,9 @@ public class SoundSystem {
     @SubscribeEvent
     public void onBlockPlace(BlockEvent.EntityPlaceEvent event) {
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
-        if (!(event.getEntity() instanceof Player player)) return;
+        // getEntity() returns Entity, check if placed by player
+        if (!(event.getEntity() instanceof Player)) return;
+        Player player = (Player) event.getEntity();
         double radius = event.getPlacedBlock().getBlock() instanceof FireBlock
             ? R_FIRE : R_BLOCK_EDIT;
         triggerSound(sl, Vec3.atCenterOf(event.getPos()), radius, player);
@@ -130,6 +138,7 @@ public class SoundSystem {
     public void onItemUse(PlayerInteractEvent.RightClickItem event) {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
+        // getEntity() on PlayerInteractEvent always returns Player
         Player player = event.getEntity();
         var item = event.getItemStack().getItem();
         boolean isEdible = event.getItemStack().isEdible();
@@ -149,8 +158,7 @@ public class SoundSystem {
     }
 
     // -------------------------------------------------------------------------
-    // CORE - creepers NEVER react to sounds
-    // Mobs that are already chasing someone are NOT distracted
+    // CORE
     // -------------------------------------------------------------------------
     public static void triggerSound(ServerLevel level, Vec3 soundPos,
                                      double baseRadius, Entity source) {
@@ -160,10 +168,8 @@ public class SoundSystem {
                 soundPos.x - baseRadius, soundPos.y - baseRadius, soundPos.z - baseRadius,
                 soundPos.x + baseRadius, soundPos.y + baseRadius, soundPos.z + baseRadius),
             mob -> {
-                // Creepers never react to sounds
                 if (mob instanceof Creeper) return false;
                 if (!MobAIHandler.isSoundReactiveMob(mob)) return false;
-                // Sound does NOT distract mob if it is already chasing someone
                 if (mob.getTarget() != null) return false;
                 return true;
             }
@@ -171,15 +177,18 @@ public class SoundSystem {
             double distSq = mob.distanceToSqr(soundPos.x, soundPos.y, soundPos.z);
             if (distSq > baseRadius * baseRadius) return;
 
-            double effectiveRadius = computeOccludedRadius(
-                level, soundPos, mob.getEyePosition(), baseRadius);
+            double effectiveRadius;
+            if (distSq < 16.0) {
+                effectiveRadius = baseRadius;
+            } else {
+                effectiveRadius = computeOccludedRadius(
+                    level, soundPos, mob.getEyePosition(), baseRadius);
+            }
             if (distSq > effectiveRadius * effectiveRadius) return;
 
-            // If source is a player - target directly
             if (source instanceof Player p && !p.isCreative() && !p.isSpectator()) {
                 mob.setTarget(p);
             } else {
-                // Move toward sound position using search system
                 var tag = mob.getPersistentData();
                 tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
                 tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
@@ -190,7 +199,6 @@ public class SoundSystem {
         });
     }
 
-    // Compute radius after block occlusion
     private static double computeOccludedRadius(ServerLevel level,
                                                   Vec3 from, Vec3 to,
                                                   double baseRadius) {
