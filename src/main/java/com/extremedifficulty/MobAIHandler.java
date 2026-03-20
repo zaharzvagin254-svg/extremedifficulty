@@ -114,7 +114,7 @@ public class MobAIHandler {
         zombie.goalSelector.addGoal(5, new MemoryPatrolGoal(zombie));
         zombie.goalSelector.addGoal(3, new FlankGoal(zombie));
         zombie.targetSelector.addGoal(3, new DetectionGoal(zombie, true));
-        // Villager targeting - same priority as player (goal priority 3)
+        // Vanilla: Zombie targets Player, Villager, WanderingTrader, IronGolem
         zombie.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
             zombie, Villager.class, true));
         zombie.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
@@ -126,6 +126,7 @@ public class MobAIHandler {
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, true));
+        // Vanilla: Husk targets Player, Villager, WanderingTrader, IronGolem
         mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
             mob, Villager.class, true));
         mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
@@ -137,20 +138,21 @@ public class MobAIHandler {
         drowned.goalSelector.addGoal(4, new AdvancedSearchGoal(drowned, 1.0));
         drowned.goalSelector.addGoal(5, new MemoryPatrolGoal(drowned));
         drowned.targetSelector.addGoal(3, new DrownedDetectionGoal(drowned));
+        // Vanilla: Drowned targets Player, Villager, WanderingTrader, IronGolem
         drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
             drowned, Villager.class, true));
+        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+            drowned, WanderingTrader.class, true));
         drowned.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
 
     private void setupArcherSkeleton(AbstractSkeleton mob) {
-        // FIX: Flag.LOOK removed from SkeletonCoverGoal to not block RangedAttackGoal
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
         mob.goalSelector.addGoal(3, new SafeKeepDistanceGoal(mob, 6.0, 14.0));
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, true));
-        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            mob, Villager.class, true));
+        // Vanilla: Skeleton targets Player and IronGolem only - NOT Villager
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.5f);
     }
 
@@ -158,8 +160,15 @@ public class MobAIHandler {
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
-        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            mob, Villager.class, true));
+        // Vanilla: Vindicator/WitherSkeleton targets Player, Villager, WanderingTrader, IronGolem
+        // BUT WitherSkeleton is Nether-only - it doesn't encounter Villagers naturally
+        // Only add villager targeting for Vindicator (raids)
+        if (mob instanceof Vindicator) {
+            mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+                mob, Villager.class, true));
+            mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+                mob, WanderingTrader.class, true));
+        }
         mob.getNavigation().setMaxVisitedNodesMultiplier(3.0f);
     }
 
@@ -169,6 +178,7 @@ public class MobAIHandler {
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, usesHearing));
         if (keepsDistance)
             mob.goalSelector.addGoal(2, new SafeKeepDistanceGoal(mob, 8.0, 12.0));
+        // Vanilla: Spider/CaveSpider targets Player and IronGolem - NOT Villager
         mob.getNavigation().setMaxVisitedNodesMultiplier(
             mob instanceof Spider ? 3.0f : 2.0f);
     }
@@ -179,8 +189,11 @@ public class MobAIHandler {
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
+        // Vanilla: Pillager targets Player, Villager, WanderingTrader, IronGolem
         mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
             mob, Villager.class, true));
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+            mob, WanderingTrader.class, true));
         mob.getNavigation().setMaxVisitedNodesMultiplier(3.0f);
     }
 
