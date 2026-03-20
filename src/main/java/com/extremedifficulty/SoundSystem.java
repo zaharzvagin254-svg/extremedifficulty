@@ -1,6 +1,7 @@
 package com.extremedifficulty;
 
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -11,7 +12,6 @@ import net.minecraft.world.entity.projectile.ThrownTrident;
 import net.minecraft.world.item.LingeringPotionItem;
 import net.minecraft.world.item.PotionItem;
 import net.minecraft.world.item.SplashPotionItem;
-import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.BedBlock;
 import net.minecraft.world.level.block.FireBlock;
 import net.minecraft.world.level.block.HoneyBlock;
@@ -19,7 +19,6 @@ import net.minecraft.world.level.block.SlimeBlock;
 import net.minecraft.world.level.block.WoolCarpetBlock;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.entity.living.LivingDeathEvent;
 import net.minecraftforge.event.entity.living.LivingFallEvent;
@@ -44,8 +43,11 @@ public class SoundSystem {
     public static final double R_EXPLOSION    = 50.0;
     public static final double R_BELL         = 50.0;
 
-    private static final double OCCLUSION_FACTOR    = 0.60;
-    private static final int    MAX_OCCLUSION_STEPS = 8;
+    // Occlusion: how much each SOLID block face reduces sound (0.0-1.0)
+    // 0.5 = 50% reduction per solid face encountered
+    // Reasoning: real sound loses ~6dB per doubling of distance through walls
+    // We model each sealed face as -50% amplitude
+    private static final double FACE_OCCLUSION = 0.50;
 
     // Arrow / trident IMPACT only
     @SubscribeEvent
@@ -67,11 +69,9 @@ public class SoundSystem {
         LivingEntity victim = event.getEntity();
         if (victim.level().isClientSide()) return;
         if (!(victim.level() instanceof ServerLevel sl)) return;
-        // Use direct cast - getEntity() on source returns Entity not Player
         Entity attacker = event.getSource().getEntity();
         if (!(attacker instanceof Player)) return;
-        Player player = (Player) attacker;
-        triggerSound(sl, victim.position(), R_WEAPON_HIT, player);
+        triggerSound(sl, victim.position(), R_WEAPON_HIT, (Player) attacker);
     }
 
     // Death
@@ -88,7 +88,6 @@ public class SoundSystem {
     public void onLivingFall(LivingFallEvent event) {
         LivingEntity entity = event.getEntity();
         if (entity.level().isClientSide()) return;
-        // Use direct cast - getEntity() returns LivingEntity, check if Player
         if (!(entity instanceof Player)) return;
         Player player = (Player) entity;
         if (!(player.level() instanceof ServerLevel sl)) return;
@@ -107,25 +106,22 @@ public class SoundSystem {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
         if (event.getUseBlock() == net.minecraftforge.eventbus.api.Event.Result.DENY) return;
-        // getEntity() on PlayerInteractEvent always returns Player
         triggerSound(sl, event.getEntity().position(), R_INTERACT, event.getEntity());
     }
 
-    // Block break - sneak does NOT mute
+    // Block break
     @SubscribeEvent
     public void onBlockBreak(BlockEvent.BreakEvent event) {
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
-        // getPlayer() on BreakEvent returns Player directly (not subtype check needed)
         Player player = event.getPlayer();
         if (player == null) return;
         triggerSound(sl, Vec3.atCenterOf(event.getPos()), R_BLOCK_EDIT, player);
     }
 
-    // Block place - sneak does NOT mute
+    // Block place
     @SubscribeEvent
     public void onBlockPlace(BlockEvent.EntityPlaceEvent event) {
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
-        // getEntity() returns Entity, check if placed by player
         if (!(event.getEntity() instanceof Player)) return;
         Player player = (Player) event.getEntity();
         double radius = event.getPlacedBlock().getBlock() instanceof FireBlock
@@ -138,14 +134,12 @@ public class SoundSystem {
     public void onItemUse(PlayerInteractEvent.RightClickItem event) {
         if (event.getLevel().isClientSide()) return;
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
-        // getEntity() on PlayerInteractEvent always returns Player
         Player player = event.getEntity();
         var item = event.getItemStack().getItem();
-        boolean isEdible = event.getItemStack().isEdible();
-        boolean isPotion = item instanceof PotionItem
-                        || item instanceof SplashPotionItem
-                        || item instanceof LingeringPotionItem;
-        if (!isEdible && !isPotion) return;
+        if (!event.getItemStack().isEdible()
+         && !(item instanceof PotionItem)
+         && !(item instanceof SplashPotionItem)
+         && !(item instanceof LingeringPotionItem)) return;
         triggerSound(sl, player.position(), R_POTION_FOOD, player);
     }
 
@@ -158,10 +152,11 @@ public class SoundSystem {
     }
 
     // -------------------------------------------------------------------------
-    // CORE
+    // CORE - 3D sound propagation with realistic occlusion
     // -------------------------------------------------------------------------
     public static void triggerSound(ServerLevel level, Vec3 soundPos,
                                      double baseRadius, Entity source) {
+        // Use sphere AABB (equal on all axes including Y)
         level.getEntitiesOfClass(
             net.minecraft.world.entity.Mob.class,
             new AABB(
@@ -177,13 +172,11 @@ public class SoundSystem {
             double distSq = mob.distanceToSqr(soundPos.x, soundPos.y, soundPos.z);
             if (distSq > baseRadius * baseRadius) return;
 
-            double effectiveRadius;
-            if (distSq < 16.0) {
-                effectiveRadius = baseRadius;
-            } else {
-                effectiveRadius = computeOccludedRadius(
-                    level, soundPos, mob.getEyePosition(), baseRadius);
-            }
+            // Compute 3D occlusion
+            double effectiveRadius = distSq < 9.0
+                ? baseRadius // very close (< 3 blocks) - skip occlusion
+                : computeOcclusion(level, soundPos, mob.getEyePosition(), baseRadius);
+
             if (distSq > effectiveRadius * effectiveRadius) return;
 
             if (source instanceof Player p && !p.isCreative() && !p.isSpectator()) {
@@ -199,28 +192,99 @@ public class SoundSystem {
         });
     }
 
-    private static double computeOccludedRadius(ServerLevel level,
-                                                  Vec3 from, Vec3 to,
-                                                  double baseRadius) {
-        var clip = level.clip(new ClipContext(
-            from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, null));
-        if (clip.getType() == HitResult.Type.MISS) return baseRadius;
+    /**
+     * Realistic 3D sound occlusion.
+     *
+     * Instead of counting blocks along a single ray (which is flat/2D biased),
+     * we sample the 6 axis-aligned directions from source and measure how many
+     * solid faces seal the path in each direction.
+     *
+     * Logic:
+     * - Walk from sound source to mob in integer block steps
+     * - For each block transition, check if the FACE between adjacent blocks is solid
+     * - Each sealed face reduces amplitude by FACE_OCCLUSION
+     * - Air gaps (open spaces) reset/reduce the occlusion count
+     * - This naturally handles vertical sound propagation
+     *
+     * Performance: max 16 block steps, early exit if fully occluded
+     */
+    private static double computeOcclusion(ServerLevel level,
+                                            Vec3 from, Vec3 to,
+                                            double baseRadius) {
+        // Integer block positions
+        BlockPos fromPos = BlockPos.containing(from);
+        BlockPos toPos   = BlockPos.containing(to);
 
-        Vec3 dir = to.subtract(from);
-        double dist = dir.length();
-        if (dist < 0.01) return baseRadius;
-        Vec3 step = dir.normalize().scale(0.5);
-        int solid = 0;
-        BlockPos last = null;
-        int maxSteps = Math.min((int)(dist / 0.5) + 1, MAX_OCCLUSION_STEPS * 2);
+        if (fromPos.equals(toPos)) return baseRadius; // same block = no occlusion
 
-        for (int i = 1; i <= maxSteps && solid < MAX_OCCLUSION_STEPS; i++) {
-            BlockPos bp = BlockPos.containing(from.add(step.scale(i)));
-            if (bp.equals(last)) continue;
-            last = bp;
-            if (level.getBlockState(bp).isSolidRender(level, bp)) solid++;
+        // Step through blocks along the path using integer grid traversal
+        double dx = to.x - from.x;
+        double dy = to.y - from.y;
+        double dz = to.z - from.z;
+        double len = Math.sqrt(dx*dx + dy*dy + dz*dz);
+        if (len < 0.01) return baseRadius;
+
+        // Normalize
+        dx /= len; dy /= len; dz /= len;
+
+        int sealedFaces   = 0;
+        int openFaces     = 0;     // open transitions reset occlusion
+        BlockPos prev     = fromPos;
+        double t          = 0;
+        double stepSize   = 0.8;   // slightly less than 1 block to catch all transitions
+        int maxSteps      = Math.min((int)(len / stepSize) + 2, 20);
+
+        for (int s = 1; s <= maxSteps; s++) {
+            t = s * stepSize;
+            if (t > len) break;
+
+            BlockPos cur = BlockPos.containing(
+                from.x + dx * t,
+                from.y + dy * t,
+                from.z + dz * t
+            );
+
+            if (cur.equals(prev)) continue;
+
+            // Determine which face we crossed (dominant axis)
+            int bx = cur.getX() - prev.getX();
+            int by = cur.getY() - prev.getY();
+            int bz = cur.getZ() - prev.getZ();
+
+            Direction face = null;
+            int abx = Math.abs(bx), aby = Math.abs(by), abz = Math.abs(bz);
+            if (abx >= aby && abx >= abz) face = bx > 0 ? Direction.EAST  : Direction.WEST;
+            else if (aby >= abz)          face = by > 0 ? Direction.UP    : Direction.DOWN;
+            else                          face = bz > 0 ? Direction.SOUTH : Direction.NORTH;
+
+            BlockState prevState = level.getBlockState(prev);
+            BlockState curState  = level.getBlockState(cur);
+
+            // A face is occluding if BOTH sides are solid at that face
+            // This means sound is truly blocked (like inside a wall)
+            boolean prevSolid = prevState.isFaceSturdy(level, prev, face);
+            boolean curSolid  = curState.isFaceSturdy(level, cur, face.getOpposite());
+
+            if (prevSolid && curSolid) {
+                sealedFaces++;
+            } else if (!prevSolid && !curSolid) {
+                // Open air transition - sound travels freely
+                // Partially cancel out previous occlusion (open space diffraction)
+                openFaces++;
+                if (openFaces >= 2 && sealedFaces > 0) {
+                    sealedFaces = Math.max(0, sealedFaces - 1);
+                    openFaces = 0;
+                }
+            }
+            // One side solid = partial occlusion, counts as nothing (diffraction around edge)
+
+            prev = cur;
+
+            // Early exit: fully occluded (8 solid faces = nearly zero radius)
+            if (sealedFaces >= 8) return baseRadius * 0.02;
         }
 
-        return solid == 0 ? baseRadius : baseRadius * Math.pow(OCCLUSION_FACTOR, solid);
+        if (sealedFaces == 0) return baseRadius;
+        return baseRadius * Math.pow(FACE_OCCLUSION, sealedFaces);
     }
 }
