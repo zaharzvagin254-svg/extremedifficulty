@@ -63,7 +63,7 @@ public class ExtremeDifficulty {
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(new SpawnHandler());
         MinecraftForge.EVENT_BUS.register(new MobAIHandler());
-        MinecraftForge.EVENT_BUS.register(new SoundAlertHandler());
+        MinecraftForge.EVENT_BUS.register(new SoundSystem());
         LOGGER.info("[ExtremeDifficulty] Mod loaded!");
     }
 
