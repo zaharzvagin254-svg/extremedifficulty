@@ -99,6 +99,9 @@ public class SpawnHandler {
         );
 
         // Не спавним в воде или лаве
+        // FIX: y=0 означает незагруженный чанк — не спавним
+        if (y <= 0) return;
+
         BlockPos pos = new BlockPos(x, y, z);
         if (!level.getBlockState(pos).isAir()) return;
         if (!level.getBlockState(pos.below()).isSolidRender(level, pos.below())) return;
