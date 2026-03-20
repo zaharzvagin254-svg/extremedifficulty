@@ -10,7 +10,6 @@ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.monster.*;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
@@ -35,15 +34,14 @@ public class MobAIHandler {
     private static final double DETECT_RANGE_SNEAK  = 10.0;
     private static final double FOLLOW_RANGE_NIGHT  = 48.0;
     private static final double FOLLOW_RANGE_DAY    = 32.0;
-
-    // FIX: max 2 minutes total search (120 sec = 2400 ticks)
-    // Split: active search 60s, passive linger 60s
-    // Per-mob randomness +-20% applied in assignSearchDuration
-    private static final int SEARCH_ACTIVE_BASE  = 1200; // 60 sec
-    private static final int SEARCH_PASSIVE_BASE = 1200; // 60 sec
-
+    private static final int    SEARCH_ACTIVE_BASE  = 1200; // 60 sec
+    private static final int    SEARCH_PASSIVE_BASE = 1200; // 60 sec
     private static final double HEAR_NORMAL = 10.0;
     private static final double HEAR_SNEAK  = 4.0;
+
+    // Drowned hears less on land (half range), full range in water
+    private static final double DROWNED_HEAR_LAND  = 5.0;
+    private static final double DROWNED_HEAR_WATER = 10.0;
 
     private boolean lastNightState        = false;
     private boolean nightStateInitialized = false;
@@ -59,16 +57,31 @@ public class MobAIHandler {
         if (!(entity instanceof LivingEntity living)) return;
         if (living.getPersistentData().getBoolean(NBT_AI_SETUP)) return;
 
+        // Order matters: subclasses before superclasses
         if (entity instanceof CaveSpider cs) {
-            setupMob(cs, true, false);
+            setupBasic(cs, true, false);
+        } else if (entity instanceof Husk husk) {
+            // Husk = zombie AI but no door breaking (lives in desert, no doors)
+            setupZombieLike(husk, false);
+        } else if (entity instanceof Drowned drowned) {
+            // Drowned = zombie AI, reduced hearing on land, full in water
+            setupDrowned(drowned);
         } else if (entity instanceof Zombie z && !(z instanceof ZombifiedPiglin)) {
             setupZombie(z);
         } else if (entity.getClass() == Skeleton.class) {
-            setupMob((Skeleton) entity, true, true);
+            setupBasic((Skeleton) entity, true, true);
+        } else if (entity instanceof Stray stray) {
+            // Stray = same as Skeleton
+            setupBasic(stray, true, true);
         } else if (entity instanceof Spider sp) {
-            setupMob(sp, true, false);
+            setupBasic(sp, true, false);
         } else if (entity instanceof Creeper cr) {
-            setupMob(cr, false, false);
+            // Creeper: sight only, better pathfinding
+            setupBasic(cr, false, false);
+        } else if (entity instanceof Vindicator vin) {
+            setupMeleeRaider(vin);
+        } else if (entity instanceof Pillager pil) {
+            setupRangedRaider(pil);
         } else {
             return;
         }
@@ -76,8 +89,8 @@ public class MobAIHandler {
         assignSearchDuration((Mob) entity);
     }
 
+    // Standard zombie with door breaking
     private void setupZombie(Zombie zombie) {
-        // FIX: remove vanilla BreakDoorGoal, add our faster version at priority 1
         zombie.goalSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof BreakDoorGoal);
         zombie.goalSelector.addGoal(1, new SmartBreakDoorGoal(zombie));
@@ -86,26 +99,60 @@ public class MobAIHandler {
         zombie.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
 
-    private void setupMob(Mob mob, boolean usesHearing, boolean keepsDistance) {
+    // Zombie-like (Husk) without door breaking
+    private void setupZombieLike(Zombie mob, boolean breakDoors) {
+        if (breakDoors) {
+            mob.goalSelector.getAvailableGoals().removeIf(
+                w -> w.getGoal() instanceof BreakDoorGoal);
+            mob.goalSelector.addGoal(1, new SmartBreakDoorGoal(mob));
+        }
+        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
+        mob.targetSelector.addGoal(3, new DetectionGoal(mob, true));
+        mob.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
+    }
+
+    // Drowned: full zombie AI but hearing depends on water/land
+    private void setupDrowned(Drowned drowned) {
+        drowned.goalSelector.addGoal(4, new AdvancedSearchGoal(drowned, 1.0));
+        drowned.targetSelector.addGoal(3, new DrownedDetectionGoal(drowned));
+        drowned.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
+    }
+
+    // Generic mob with optional hearing and distance-keeping
+    private void setupBasic(Mob mob, boolean usesHearing, boolean keepsDistance) {
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, usesHearing));
         if (keepsDistance)
             mob.goalSelector.addGoal(2, new SafeKeepDistanceGoal(mob, 8.0, 12.0));
+        // Spiders get bigger pathfinding budget (they climb)
         mob.getNavigation().setMaxVisitedNodesMultiplier(
             mob instanceof Spider ? 3.0f : 2.0f);
     }
 
+    // Vindicator: melee raider - excellent pathfinding, no hearing (uses sight)
+    private void setupMeleeRaider(Vindicator mob) {
+        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
+        mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
+        // Vindicator already breaks doors in vanilla - keep that, just improve nav
+        mob.getNavigation().setMaxVisitedNodesMultiplier(3.0f);
+    }
+
+    // Pillager: ranged raider - keeps distance, excellent pathfinding
+    private void setupRangedRaider(Pillager mob) {
+        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
+        mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
+        mob.goalSelector.addGoal(2, new SafeKeepDistanceGoal(mob, 10.0, 16.0));
+        mob.getNavigation().setMaxVisitedNodesMultiplier(3.0f);
+    }
+
     private void assignSearchDuration(Mob mob) {
-        // Each mob gets unique active + passive duration with +-20% variance
-        double variance = 0.8 + mob.getRandom().nextDouble() * 0.4;
-        int active  = (int)(SEARCH_ACTIVE_BASE  * variance);
-        int passive = (int)(SEARCH_PASSIVE_BASE * variance);
-        mob.getPersistentData().putInt(NBT_SEARCH_DURATION, active);
-        mob.getPersistentData().putInt("ed_pdur", passive);
+        double v = 0.8 + mob.getRandom().nextDouble() * 0.4;
+        mob.getPersistentData().putInt(NBT_SEARCH_DURATION, (int)(SEARCH_ACTIVE_BASE * v));
+        mob.getPersistentData().putInt("ed_pdur", (int)(SEARCH_PASSIVE_BASE * v));
     }
 
     // -------------------------------------------------------------------------
-    // GROUP ALERT - only on player melee damage
+    // GROUP ALERT - zombie family only, player melee only
     // -------------------------------------------------------------------------
 
     @SubscribeEvent
@@ -152,11 +199,10 @@ public class MobAIHandler {
 
         if (gt % 10 != 0) return;
 
-        // Update follow range only on day/night change
-        boolean nightChanged = !nightStateInitialized || isNight != lastNightState;
-        if (nightChanged) {
-            lastNightState = isNight;
-            nightStateInitialized = true;
+        // Follow range update only on day/night change
+        boolean changed = !nightStateInitialized || isNight != lastNightState;
+        if (changed) {
+            lastNightState = isNight; nightStateInitialized = true;
             double range = isNight ? FOLLOW_RANGE_NIGHT : FOLLOW_RANGE_DAY;
             sl.getEntities().getAll().forEach(entity -> {
                 if (!(entity instanceof Mob mob)) return;
@@ -176,7 +222,6 @@ public class MobAIHandler {
         var tag = mob.getPersistentData();
         int state = tag.getInt(NBT_SEARCH_STATE);
 
-        // Has active target
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
                 if (mob.hasLineOfSight(player)) {
@@ -187,7 +232,6 @@ public class MobAIHandler {
                     tag.putInt(NBT_SEARCH_TICKS, 0);
                 } else if (!canHearPlayer(mob, player)) {
                     mob.setTarget(null);
-                    // Only enter search state if we actually know where they were
                     if (tag.contains(NBT_LAST_X)) {
                         tag.putInt(NBT_SEARCH_STATE, 1);
                         tag.putInt(NBT_SEARCH_TICKS, 0);
@@ -201,21 +245,17 @@ public class MobAIHandler {
 
         int ticks = tag.getInt(NBT_SEARCH_TICKS) + 10;
         tag.putInt(NBT_SEARCH_TICKS, ticks);
-
         int activeDur  = tag.contains(NBT_SEARCH_DURATION) ? tag.getInt(NBT_SEARCH_DURATION) : SEARCH_ACTIVE_BASE;
-        int passiveDur = tag.contains("ed_pdur")            ? tag.getInt("ed_pdur")           : SEARCH_PASSIVE_BASE;
+        int passiveDur = tag.contains("ed_pdur")           ? tag.getInt("ed_pdur")           : SEARCH_PASSIVE_BASE;
 
         if (state == 1 && ticks >= activeDur) {
-            // Move to passive lingering
             tag.putInt(NBT_SEARCH_STATE, 2);
             tag.putInt(NBT_SEARCH_TICKS, 0);
         } else if (state == 2 && ticks >= passiveDur) {
-            // FIX: fully give up - clear ALL search data so goal stops
             clearSearch(tag);
             return;
         }
 
-        // While searching, spot a visible nearby player
         if (tag.contains(NBT_LAST_X)) {
             Player nearby = level.getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearby != null && !nearby.isCreative() && !nearby.isSpectator()
@@ -226,8 +266,7 @@ public class MobAIHandler {
         }
     }
 
-    // FIX: single method to clear all search state - prevents goal from lingering
-    private static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
+    static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
         tag.putInt(NBT_SEARCH_STATE, 0);
         tag.putInt(NBT_SEARCH_TICKS, 0);
         tag.remove(NBT_LAST_X);
@@ -258,6 +297,7 @@ public class MobAIHandler {
     // GOALS
     // -------------------------------------------------------------------------
 
+    // Standard detection with sight + optional hearing at night
     static class DetectionGoal extends NearestAttackableTargetGoal<Player> {
         private final boolean usesHearing;
         private final TargetingConditions normalSight;
@@ -292,40 +332,66 @@ public class MobAIHandler {
         }
     }
 
-    /**
-     * FIX: Smart door breaking.
-     * Zombie breaks door ONLY when it blocks path to target.
-     * Works day and night (not time-restricted like vanilla).
-     * Breaks faster (60 ticks = 3 sec vs vanilla 240 = 12 sec).
-     */
-    static class SmartBreakDoorGoal extends BreakDoorGoal {
+    // Drowned detection: reduced hearing on land, normal in water
+    static class DrownedDetectionGoal extends NearestAttackableTargetGoal<Player> {
+        private final TargetingConditions normalSight;
+        private final TargetingConditions sneakSight;
+        private final TargetingConditions waterHear;
+        private final TargetingConditions landHear;
+        private final TargetingConditions sneakHear;
 
-        public SmartBreakDoorGoal(Mob mob) {
-            // 60 ticks = 3 sec, only on Hard difficulty
-            super(mob, 60, d -> d == Difficulty.HARD);
+        public DrownedDetectionGoal(Drowned mob) {
+            super(mob, Player.class, 10, true, false, null);
+            this.normalSight = TargetingConditions.forCombat().range(DETECT_RANGE_NORMAL);
+            this.sneakSight  = TargetingConditions.forCombat().range(DETECT_RANGE_SNEAK);
+            this.waterHear   = TargetingConditions.forCombat()
+                .range(DROWNED_HEAR_WATER).ignoreLineOfSight();
+            this.landHear    = TargetingConditions.forCombat()
+                .range(DROWNED_HEAR_LAND).ignoreLineOfSight();
+            this.sneakHear   = TargetingConditions.forCombat()
+                .range(HEAR_SNEAK).ignoreLineOfSight();
         }
 
         @Override
         public boolean canUse() {
-            // Only break if mob has a target - won't break random doors
+            Player nearest = mob.level().getNearestPlayer(mob, DETECT_RANGE_NORMAL);
+            if (nearest == null || nearest.isCreative()
+             || nearest.isSpectator() || nearest.isInvisible()) return false;
+            boolean sneaking = nearest.isCrouching();
+
+            // Sight detection
+            this.targetConditions = sneaking ? sneakSight : normalSight;
+            if (super.canUse()) return true;
+
+            // Hearing: drowned hears much better in water than on land
+            boolean inWater = mob.isInWater();
+            if (sneaking) {
+                this.targetConditions = sneakHear;
+            } else {
+                this.targetConditions = inWater ? waterHear : landHear;
+            }
+            return super.canUse();
+        }
+    }
+
+    // Smart door breaking: only when target blocks path
+    static class SmartBreakDoorGoal extends BreakDoorGoal {
+        public SmartBreakDoorGoal(Mob mob) {
+            super(mob, 60, d -> d == Difficulty.HARD);
+        }
+        @Override
+        public boolean canUse() {
             if (mob.getTarget() == null) return false;
             return super.canUse();
         }
-
         @Override
         public boolean canContinueToUse() {
-            // Stop if target gone
             if (mob.getTarget() == null) return false;
             return super.canContinueToUse();
         }
     }
 
-    /**
-     * Advanced search goal.
-     * FIX: checks NBT_LAST_X exists AND state > 0 to decide if active.
-     * Clears properly when state goes to 0.
-     * Calmer movement speed.
-     */
+    // Search goal: active circle then passive wander, then leave
     static class AdvancedSearchGoal extends Goal {
         private final Mob mob;
         private final double speed;
@@ -344,7 +410,6 @@ public class MobAIHandler {
         public boolean canUse() {
             if (mob.getTarget() != null) return false;
             var tag = mob.getPersistentData();
-            // FIX: require BOTH state > 0 AND last position known
             return tag.getInt(NBT_SEARCH_STATE) > 0 && tag.contains(NBT_LAST_X);
         }
 
@@ -352,7 +417,6 @@ public class MobAIHandler {
         public boolean canContinueToUse() {
             if (mob.getTarget() != null) return false;
             var tag = mob.getPersistentData();
-            // FIX: stop immediately when state cleared
             return tag.getInt(NBT_SEARCH_STATE) > 0 && tag.contains(NBT_LAST_X);
         }
 
@@ -369,10 +433,8 @@ public class MobAIHandler {
             localTick++;
             mob.setAggressive(false);
 
-            // Stuck detection every 10 ticks using raw coords
             if (localTick % 10 == 0) {
-                double dx = mob.getX() - lastX;
-                double dz = mob.getZ() - lastZ;
+                double dx = mob.getX() - lastX, dz = mob.getZ() - lastZ;
                 if (dx*dx + dz*dz < 0.01) {
                     stuckTicks += 10;
                 } else {
@@ -382,7 +444,6 @@ public class MobAIHandler {
                 if (stuckTicks >= STUCK_THRESHOLD) {
                     stuckTicks = 0;
                     if (localTick > 200) {
-                        // Give up completely
                         clearSearch(mob.getPersistentData());
                         return;
                     }
@@ -393,43 +454,32 @@ public class MobAIHandler {
 
             var tag = mob.getPersistentData();
             int state = tag.getInt(NBT_SEARCH_STATE);
-
-            if (target == null
-             || mob.blockPosition().closerThan(target, 2.0)
-             || localTick % 80 == 0) {
+            if (target == null || mob.blockPosition().closerThan(target, 2.0) || localTick % 80 == 0)
                 pickTarget();
-            }
 
             if (target != null) {
-                // FIX: calmer speed - state 1 = 70% speed, state 2 = 50% (passive linger)
                 double spd = state == 1 ? speed * 0.7 : speed * 0.5;
-                mob.getNavigation().moveTo(
-                    target.getX()+0.5, target.getY(), target.getZ()+0.5, spd);
+                mob.getNavigation().moveTo(target.getX()+0.5, target.getY(), target.getZ()+0.5, spd);
             }
         }
 
         private void pickTarget() {
             var tag = mob.getPersistentData();
             if (!tag.contains(NBT_LAST_X)) { target = null; return; }
-            double lx = tag.getDouble(NBT_LAST_X);
-            double lz = tag.getDouble(NBT_LAST_Z);
+            double lx = tag.getDouble(NBT_LAST_X), lz = tag.getDouble(NBT_LAST_Z);
             int state = tag.getInt(NBT_SEARCH_STATE);
-            // Active = tight circle 5 blocks, passive = wider wander 10 blocks
             double radius = state == 1 ? 5.0 : 10.0;
 
-            for (int attempt = 0; attempt < 2; attempt++) {
+            for (int a = 0; a < 2; a++) {
                 double angle = mob.getRandom().nextDouble() * Math.PI * 2;
                 double dist  = radius * (0.4 + mob.getRandom().nextDouble() * 0.6);
                 int nx = (int)(lx + Math.cos(angle) * dist);
                 int nz = (int)(lz + Math.sin(angle) * dist);
-                int ny = mob.level().getHeight(
-                    Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, nx, nz);
+                int ny = mob.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, nx, nz);
                 if (ny <= 0 || Math.abs(ny - mob.getBlockY()) > 5) continue;
-                BlockPos candidate = new BlockPos(nx, ny, nz);
-                var path = mob.getNavigation().createPath(candidate, 1);
-                if (path != null && path.canReach()) {
-                    target = candidate; return;
-                }
+                BlockPos c = new BlockPos(nx, ny, nz);
+                var path = mob.getNavigation().createPath(c, 1);
+                if (path != null && path.canReach()) { target = c; return; }
             }
             target = null;
         }
