@@ -62,6 +62,7 @@ public class ExtremeDifficulty {
             modBus.addListener(this::onClientSetup);
         }
         MinecraftForge.EVENT_BUS.register(this);
+        MinecraftForge.EVENT_BUS.register(new SpawnHandler());
         LOGGER.info("[ExtremeDifficulty] Mod loaded!");
     }
 
