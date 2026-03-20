@@ -1,5 +1,6 @@
 package com.extremedifficulty;
 
+import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.model.ZombieModel;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -40,15 +41,17 @@ public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
 
         M model = this.getParentModel();
 
-        boolean bodyVisible   = model.body.visible;
-        boolean headVisible   = model.head.visible;
-        boolean hatVisible    = model.hat.visible;
-        boolean rightArmVis  = model.rightArm.visible;
-        boolean leftArmVis   = model.leftArm.visible;
-        boolean rightLegVis  = model.rightLeg.visible;
-        boolean leftLegVis   = model.leftLeg.visible;
+        // Save visibility state
+        boolean bodyVisible    = model.body.visible;
+        boolean headVisible    = model.head.visible;
+        boolean hatVisible     = model.hat.visible;
+        boolean rightArmVis   = model.rightArm.visible;
+        boolean leftArmVis    = model.leftArm.visible;
+        boolean rightLegVis   = model.rightLeg.visible;
+        boolean leftLegVis    = model.leftLeg.visible;
 
-        model.body.visible    = false;
+        // Hide everything except head
+        model.body.visible     = false;
         model.rightArm.visible = false;
         model.leftArm.visible  = false;
         model.rightLeg.visible = false;
@@ -56,7 +59,14 @@ public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
         model.hat.visible      = false;
         model.head.visible     = true;
 
-        var buffer = bufferSource.getBuffer(RenderType.eyes(ZOMBIE_EYES));
+        // FIX: use entityTranslucentCull instead of eyes()
+        // eyes() renders transparent pixels as BLACK (depth write disabled)
+        // entityTranslucentCull properly respects alpha=0 pixels - they stay invisible
+        // 15728640 = max light (0xF000F0) - eyes glow regardless of surroundings
+        var buffer = bufferSource.getBuffer(
+            RenderType.entityTranslucentCull(ZOMBIE_EYES)
+        );
+
         model.renderToBuffer(
             poseStack,
             buffer,
@@ -65,6 +75,7 @@ public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
             1.0f, 1.0f, 1.0f, 1.0f
         );
 
+        // Restore visibility
         model.body.visible     = bodyVisible;
         model.head.visible     = headVisible;
         model.hat.visible      = hatVisible;
