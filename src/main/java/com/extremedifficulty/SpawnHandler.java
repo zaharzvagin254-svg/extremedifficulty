@@ -7,6 +7,7 @@ import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.LightLayer;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -20,9 +21,6 @@ public class SpawnHandler {
     private static final int ZOMBIE_MAX_GROUP = 6;
     private static final int SPAWN_MIN_DIST = 24;
     private static final int SPAWN_MAX_DIST = 48;
-
-    // FIX: count only zombies (not all monsters) so the cap isn't hit
-    // by vanilla skeleton/spider spawns blocking our zombie waves
     private static final int MAX_ZOMBIES_NEARBY = 20;
 
     private final Random random = new Random();
@@ -41,7 +39,6 @@ public class SpawnHandler {
         for (ServerPlayer player : serverLevel.players()) {
             if (player.isCreative() || player.isSpectator()) continue;
 
-            // FIX: count only zombies nearby, not all monsters
             int nearbyZombies = serverLevel.getEntitiesOfClass(
                 Zombie.class,
                 player.getBoundingBox().inflate(SPAWN_MAX_DIST),
@@ -69,13 +66,25 @@ public class SpawnHandler {
         int z = (int)(player.getZ() + Math.sin(angle) * dist);
 
         int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
-
         if (y <= 0) return;
 
         BlockPos pos = new BlockPos(x, y, z);
+
+        // Must be air
         if (!level.getBlockState(pos).isAir()) return;
+
+        // Must have solid ground below
         if (!level.getBlockState(pos.below()).isSolidRender(level, pos.below())) return;
-        if (level.getMaxLocalRawBrightness(pos) > 7) return;
+
+        // Block light check (torches etc)
+        if (level.getBrightness(LightLayer.BLOCK, pos) > 7) return;
+
+        // FIX: use SKY light check instead of getMaxLocalRawBrightness
+        // getMaxLocalRawBrightness = max(sky, block) - night sky = 0 so this was fine
+        // BUT: we also need hasSkyAccess so zombies burn in sunlight at dawn
+        // Spawn only where sky is directly visible (no roof/trees overhead)
+        // This ensures spawned zombies behave like vanilla - they WILL burn at dawn
+        if (!level.canSeeSky(pos)) return;
 
         Zombie zombie = EntityType.ZOMBIE.create(level);
         if (zombie == null) return;
@@ -84,6 +93,7 @@ public class SpawnHandler {
         zombie.finalizeSpawn(level, level.getCurrentDifficultyAt(pos),
             MobSpawnType.NATURAL, null, null);
 
+        // Save base HP for buff system
         if (!zombie.getPersistentData().contains("ed_base_hp")) {
             var attr = zombie.getAttribute(
                 net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
