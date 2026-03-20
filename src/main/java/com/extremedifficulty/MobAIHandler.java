@@ -313,6 +313,8 @@ public class MobAIHandler {
             localTick  = 0;
             stuckTicks = 0;
             lastPos    = mob.position();
+            // Mob walks to sound with arms down - not in combat pose
+            mob.setAggressive(false);
             pickTarget();
         }
 
@@ -321,6 +323,9 @@ public class MobAIHandler {
             localTick++;
             var tag = mob.getPersistentData();
             int state = tag.getInt(NBT_SEARCH_STATE);
+
+            // Keep arms down while searching - no combat pose
+            mob.setAggressive(false);
 
             // FIX: stuck detection - check if mob is actually moving
             Vec3 cur = mob.position();
@@ -397,6 +402,9 @@ public class MobAIHandler {
         @Override
         public void stop() {
             mob.getNavigation().stop();
+            // Restore aggressive state when done searching
+            // (will be set again by combat goals if needed)
+            mob.setAggressive(false);
             target     = null;
             localTick  = 0;
             stuckTicks = 0;
