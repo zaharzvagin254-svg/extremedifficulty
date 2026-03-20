@@ -40,14 +40,13 @@ public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
 
         M model = this.getParentModel();
 
-        // Прячем все части модели кроме головы
-        boolean bodyVisible    = model.body.visible;
-        boolean headVisible    = model.head.visible;
+        boolean bodyVisible   = model.body.visible;
+        boolean headVisible   = model.head.visible;
         boolean hatVisible    = model.hat.visible;
-        boolean rightArmVis   = model.rightArm.visible;
-        boolean leftArmVis    = model.leftArm.visible;
-        boolean rightLegVis   = model.rightLeg.visible;
-        boolean leftLegVis    = model.leftLeg.visible;
+        boolean rightArmVis  = model.rightArm.visible;
+        boolean leftArmVis   = model.leftArm.visible;
+        boolean rightLegVis  = model.rightLeg.visible;
+        boolean leftLegVis   = model.leftLeg.visible;
 
         model.body.visible    = false;
         model.rightArm.visible = false;
@@ -55,19 +54,17 @@ public class ZombieEyeGlowLayer<T extends Zombie, M extends ZombieModel<T>>
         model.rightLeg.visible = false;
         model.leftLeg.visible  = false;
         model.hat.visible      = false;
-        model.head.visible     = true; // только голова
+        model.head.visible     = true;
 
-        // Рендерим только голову с текстурой глаз на полной яркости
         var buffer = bufferSource.getBuffer(RenderType.eyes(ZOMBIE_EYES));
         model.renderToBuffer(
             poseStack,
             buffer,
-            15728640, // MAX_LIGHT — полная яркость независимо от окружения
+            15728640,
             OverlayTexture.NO_OVERLAY,
             1.0f, 1.0f, 1.0f, 1.0f
         );
 
-        // Восстанавливаем видимость всех частей
         model.body.visible     = bodyVisible;
         model.head.visible     = headVisible;
         model.hat.visible      = hatVisible;
