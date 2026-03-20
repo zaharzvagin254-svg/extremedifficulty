@@ -11,7 +11,6 @@ import net.minecraft.world.entity.monster.*;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.phys.Vec3;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
 import net.minecraftforge.event.TickEvent;
@@ -32,20 +31,17 @@ public class MobAIHandler {
     public static final String NBT_LAST_Z          = "ed_lz";
     public static final String NBT_SEARCH_DURATION = "ed_sdur";
 
-    // Detection ranges
     private static final double DETECT_RANGE_NORMAL = 18.0;
     private static final double DETECT_RANGE_SNEAK  = 10.0;
-
-    // Follow ranges after aggro
-    private static final double FOLLOW_RANGE_NIGHT = 48.0;
-    private static final double FOLLOW_RANGE_DAY   = 32.0;
-
-    // Active search = 30 sec, passive = 30 sec, total 60 sec
-    private static final int SEARCH_ACTIVE_TICKS  = 600;
-    private static final int SEARCH_PASSIVE_TICKS = 600;
-
+    private static final double FOLLOW_RANGE_NIGHT  = 48.0;
+    private static final double FOLLOW_RANGE_DAY    = 32.0;
+    private static final int    SEARCH_ACTIVE_TICKS  = 600;
     private static final double HEAR_NORMAL  = 10.0;
     private static final double HEAR_SNEAK   = 4.0;
+
+    // OPT: track last night state to skip redundant attribute updates
+    private boolean lastNightState = false;
+    private boolean nightStateInitialized = false;
 
     // -------------------------------------------------------------------------
     // ENTITY JOIN
@@ -67,7 +63,6 @@ public class MobAIHandler {
         } else if (entity instanceof Spider sp) {
             setupMob(sp, true, false);
         } else if (entity instanceof Creeper cr) {
-            // Creeper only uses sight - no sound reactions, no hearing
             setupMob(cr, false, false);
         } else {
             return;
@@ -101,7 +96,7 @@ public class MobAIHandler {
     }
 
     // -------------------------------------------------------------------------
-    // GROUP ALERT
+    // GROUP ALERT - FIX: only on player melee damage
     // -------------------------------------------------------------------------
 
     @SubscribeEvent
@@ -110,9 +105,11 @@ public class MobAIHandler {
         if (zombie instanceof ZombifiedPiglin) return;
         if (zombie.level().isClientSide()) return;
         if (!(zombie.level() instanceof ServerLevel sl)) return;
+
+        // FIX: only react to player attacks, not fire/poison/fall etc
         Entity attacker = event.getSource().getEntity();
-        if (!(attacker instanceof LivingEntity target)) return;
-        if (target instanceof Player p && p.isInvisible() && p.isCrouching()) return;
+        if (!(attacker instanceof Player player)) return;
+        if (player.isInvisible() && player.isCrouching()) return;
 
         List<Zombie> nearby = sl.getEntitiesOfClass(Zombie.class,
             zombie.getBoundingBox().inflate(16.0),
@@ -120,7 +117,7 @@ public class MobAIHandler {
         int count = 0;
         for (Zombie z : nearby) {
             if (count++ >= 6) break;
-            z.setTarget(target);
+            z.setTarget(player);
         }
     }
 
@@ -133,8 +130,9 @@ public class MobAIHandler {
         if (event.phase != TickEvent.Phase.END) return;
         if (!(event.level instanceof ServerLevel sl)) return;
         long gt = sl.getGameTime();
+        boolean isNight = isNight(sl);
 
-        // Footsteps - every 20 ticks, ONLY muted by sneaking
+        // Footsteps every 20 ticks - sneak mutes only footsteps
         if (gt % 20 == 0) {
             for (var player : sl.players()) {
                 if (player.isCrouching()) continue;
@@ -145,38 +143,44 @@ public class MobAIHandler {
             }
         }
 
-        // AI update every 10 ticks
         if (gt % 10 != 0) return;
-        boolean isNight = isNight(sl);
 
+        // OPT: only update follow range when day/night changes
+        boolean nightChanged = !nightStateInitialized || (isNight != lastNightState);
+        if (nightChanged) {
+            lastNightState = isNight;
+            nightStateInitialized = true;
+            double range = isNight ? FOLLOW_RANGE_NIGHT : FOLLOW_RANGE_DAY;
+            sl.getEntities().getAll().forEach(entity -> {
+                if (!(entity instanceof Mob mob)) return;
+                var attr = mob.getAttribute(
+                    net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE);
+                if (attr != null) attr.setBaseValue(range);
+            });
+        }
+
+        // AI search state update every 10 ticks
         sl.getEntities().getAll().forEach(entity -> {
             if (!(entity instanceof Mob mob)) return;
-            updateFollowRange(mob, isNight);
-            updateSearchState(mob, sl);
+            updateSearchState(mob, sl, gt);
         });
     }
 
-    private void updateFollowRange(Mob mob, boolean isNight) {
-        var attr = mob.getAttribute(
-            net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE);
-        if (attr != null)
-            attr.setBaseValue(isNight ? FOLLOW_RANGE_NIGHT : FOLLOW_RANGE_DAY);
-    }
-
-    private void updateSearchState(Mob mob, ServerLevel level) {
+    // OPT: pass gameTime to avoid redundant calls
+    private void updateSearchState(Mob mob, ServerLevel level, long gt) {
         var tag = mob.getPersistentData();
         int state = tag.getInt(NBT_SEARCH_STATE);
 
-        // Has active target
         if (mob.getTarget() instanceof Player player) {
-            if (mob.hasLineOfSight(player)) {
-                tag.putDouble(NBT_LAST_X, player.getX());
-                tag.putDouble(NBT_LAST_Y, player.getY());
-                tag.putDouble(NBT_LAST_Z, player.getZ());
-                tag.putInt(NBT_SEARCH_STATE, 0);
-                tag.putInt(NBT_SEARCH_TICKS, 0);
-            } else {
-                if (!canHearPlayer(mob, player)) {
+            // OPT: check LOS every 20 ticks instead of every 10
+            if (gt % 20 == 0) {
+                if (mob.hasLineOfSight(player)) {
+                    tag.putDouble(NBT_LAST_X, player.getX());
+                    tag.putDouble(NBT_LAST_Y, player.getY());
+                    tag.putDouble(NBT_LAST_Z, player.getZ());
+                    tag.putInt(NBT_SEARCH_STATE, 0);
+                    tag.putInt(NBT_SEARCH_TICKS, 0);
+                } else if (!canHearPlayer(mob, player)) {
                     mob.setTarget(null);
                     tag.putInt(NBT_SEARCH_STATE, 1);
                     tag.putInt(NBT_SEARCH_TICKS, 0);
@@ -196,7 +200,6 @@ public class MobAIHandler {
             tag.putInt(NBT_SEARCH_STATE, 2);
             tag.putInt(NBT_SEARCH_TICKS, 0);
         } else if (state == 2 && ticks >= dur) {
-            // Give up
             tag.putInt(NBT_SEARCH_STATE, 0);
             tag.putInt(NBT_SEARCH_TICKS, 0);
             tag.remove(NBT_LAST_X);
@@ -205,7 +208,7 @@ public class MobAIHandler {
             return;
         }
 
-        // Spot a visible player nearby while searching
+        // Spot visible player while searching
         if (tag.contains(NBT_LAST_X)) {
             Player nearby = level.getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearby != null && !nearby.isCreative() && !nearby.isSpectator()
@@ -273,24 +276,18 @@ public class MobAIHandler {
         }
     }
 
-    /**
-     * Advanced search goal.
-     * FIX: mob gives up if stuck (not moving) for too long.
-     * FIX: mob does not search forever - respects search state timeout.
-     */
     static class AdvancedSearchGoal extends Goal {
         private final Mob mob;
         private final double speed;
-        private BlockPos target    = null;
-        private int localTick      = 0;
-        private Vec3 lastPos       = null;
-        private int stuckTicks     = 0;
-        // If mob hasn't moved in 3 sec while searching - try new point or give up
+        private BlockPos target = null;
+        private int localTick   = 0;
+        private int stuckTicks  = 0;
+        // OPT: store coords instead of Vec3 to avoid allocation every tick
+        private double lastX = Double.MIN_VALUE, lastY, lastZ;
         private static final int STUCK_THRESHOLD = 60;
 
         public AdvancedSearchGoal(Mob mob, double speed) {
-            this.mob   = mob;
-            this.speed = speed;
+            this.mob = mob; this.speed = speed;
             setFlags(EnumSet.of(Flag.MOVE));
         }
 
@@ -310,10 +307,8 @@ public class MobAIHandler {
 
         @Override
         public void start() {
-            localTick  = 0;
-            stuckTicks = 0;
-            lastPos    = mob.position();
-            // Mob walks to sound with arms down - not in combat pose
+            localTick = 0; stuckTicks = 0;
+            lastX = mob.getX(); lastY = mob.getY(); lastZ = mob.getZ();
             mob.setAggressive(false);
             pickTarget();
         }
@@ -321,39 +316,36 @@ public class MobAIHandler {
         @Override
         public void tick() {
             localTick++;
+            mob.setAggressive(false);
+
+            // OPT: stuck check every 10 ticks using raw coords (no Vec3 alloc)
+            if (localTick % 10 == 0) {
+                double dx = mob.getX() - lastX;
+                double dz = mob.getZ() - lastZ;
+                if (dx*dx + dz*dz < 0.01) {
+                    stuckTicks += 10;
+                } else {
+                    stuckTicks = 0;
+                    lastX = mob.getX(); lastY = mob.getY(); lastZ = mob.getZ();
+                }
+
+                if (stuckTicks >= STUCK_THRESHOLD) {
+                    stuckTicks = 0;
+                    if (localTick > 200) {
+                        var tag = mob.getPersistentData();
+                        tag.putInt(NBT_SEARCH_STATE, 0);
+                        tag.putInt(NBT_SEARCH_TICKS, 0);
+                        tag.remove(NBT_LAST_X); tag.remove(NBT_LAST_Y); tag.remove(NBT_LAST_Z);
+                        return;
+                    }
+                    pickTarget();
+                    return;
+                }
+            }
+
             var tag = mob.getPersistentData();
             int state = tag.getInt(NBT_SEARCH_STATE);
 
-            // Keep arms down while searching - no combat pose
-            mob.setAggressive(false);
-
-            // FIX: stuck detection - check if mob is actually moving
-            Vec3 cur = mob.position();
-            if (lastPos != null && cur.distanceToSqr(lastPos) < 0.01) {
-                stuckTicks++;
-            } else {
-                stuckTicks = 0;
-                lastPos = cur;
-            }
-
-            // If stuck for too long - pick a new random target or give up
-            if (stuckTicks >= STUCK_THRESHOLD) {
-                stuckTicks = 0;
-                if (localTick > 200) {
-                    // Been searching a while and stuck - clear search state
-                    tag.putInt(NBT_SEARCH_STATE, 0);
-                    tag.putInt(NBT_SEARCH_TICKS, 0);
-                    tag.remove(NBT_LAST_X);
-                    tag.remove(NBT_LAST_Y);
-                    tag.remove(NBT_LAST_Z);
-                    return;
-                }
-                // Try a different random point
-                pickTarget();
-                return;
-            }
-
-            // Re-pick target periodically
             if (target == null
              || mob.blockPosition().closerThan(target, 2.0)
              || localTick % 80 == 0) {
@@ -361,54 +353,44 @@ public class MobAIHandler {
             }
 
             if (target != null) {
-                double spd = state == 1 ? speed : speed * 0.6;
                 mob.getNavigation().moveTo(
-                    target.getX() + 0.5, target.getY(), target.getZ() + 0.5, spd);
+                    target.getX()+0.5, target.getY(), target.getZ()+0.5,
+                    state == 1 ? speed : speed * 0.6);
             }
         }
 
         private void pickTarget() {
             var tag = mob.getPersistentData();
             if (!tag.contains(NBT_LAST_X)) { target = null; return; }
-
             double lx = tag.getDouble(NBT_LAST_X);
             double lz = tag.getDouble(NBT_LAST_Z);
             int state = tag.getInt(NBT_SEARCH_STATE);
             double radius = state == 1 ? 6.0 : 12.0;
 
-            // Try up to 5 random points, pick first reachable one
-            for (int attempt = 0; attempt < 5; attempt++) {
+            // OPT: max 2 path attempts (was 5) - cheaper
+            for (int attempt = 0; attempt < 2; attempt++) {
                 double angle = mob.getRandom().nextDouble() * Math.PI * 2;
                 double dist  = radius * (0.4 + mob.getRandom().nextDouble() * 0.6);
                 int nx = (int)(lx + Math.cos(angle) * dist);
                 int nz = (int)(lz + Math.sin(angle) * dist);
                 int ny = mob.level().getHeight(
                     Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, nx, nz);
-
                 if (ny <= 0 || Math.abs(ny - mob.getBlockY()) > 5) continue;
-
                 BlockPos candidate = new BlockPos(nx, ny, nz);
-                // Check if navigation can reach it (hasPath check)
                 var path = mob.getNavigation().createPath(candidate, 1);
                 if (path != null && path.canReach()) {
-                    target = candidate;
-                    return;
+                    target = candidate; return;
                 }
             }
-            // No reachable point found - clear target
             target = null;
         }
 
         @Override
         public void stop() {
             mob.getNavigation().stop();
-            // Restore aggressive state when done searching
-            // (will be set again by combat goals if needed)
             mob.setAggressive(false);
-            target     = null;
-            localTick  = 0;
-            stuckTicks = 0;
-            lastPos    = null;
+            target = null; localTick = 0; stuckTicks = 0;
+            lastX = Double.MIN_VALUE;
         }
     }
 
@@ -432,7 +414,7 @@ public class MobAIHandler {
         private final double minSq, preferSq;
 
         public SafeKeepDistanceGoal(Mob mob, double min, double prefer) {
-            this.mob = mob; this.minSq = min*min; this.preferSq = prefer*prefer;
+            this.mob = mob; minSq = min*min; preferSq = prefer*prefer;
             setFlags(EnumSet.of(Flag.MOVE));
         }
         @Override public boolean canUse() {
@@ -443,8 +425,7 @@ public class MobAIHandler {
             LivingEntity t = mob.getTarget();
             return t != null && mob.distanceToSqr(t) < preferSq;
         }
-        @Override
-        public void tick() {
+        @Override public void tick() {
             LivingEntity t = mob.getTarget();
             if (t == null) return;
             double dx = mob.getX()-t.getX(), dz = mob.getZ()-t.getZ();
@@ -452,7 +433,8 @@ public class MobAIHandler {
             if (lenSq < 0.0001) return;
             double inv = 1.0/Math.sqrt(lenSq);
             double tx = mob.getX()+dx*inv*3, tz = mob.getZ()+dz*inv*3;
-            int ty = mob.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,(int)tx,(int)tz);
+            int ty = mob.level().getHeight(
+                Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int)tx, (int)tz);
             if (Math.abs(ty-mob.getBlockY()) > 4) return;
             mob.getNavigation().moveTo(tx, ty, tz, 1.0);
         }
