@@ -16,12 +16,12 @@ import java.util.Random;
 
 public class SpawnHandler {
 
-    private static final int ZOMBIE_SPAWN_INTERVAL = 72;
-    private static final int ZOMBIE_MIN_GROUP = 3;
-    private static final int ZOMBIE_MAX_GROUP = 6;
+    private static final int ZOMBIE_SPAWN_INTERVAL = 200; // every 10 sec
+    private static final int ZOMBIE_MIN_GROUP = 1;
+    private static final int ZOMBIE_MAX_GROUP = 3;
     private static final int SPAWN_MIN_DIST = 24;
     private static final int SPAWN_MAX_DIST = 48;
-    private static final int MAX_ZOMBIES_NEARBY = 20;
+    private static final int MAX_ZOMBIES_NEARBY = 12;
 
     private final Random random = new Random();
 
