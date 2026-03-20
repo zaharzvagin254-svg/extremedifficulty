@@ -10,6 +10,7 @@ import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.monster.*;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.DoorBlock;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.LivingHurtEvent;
@@ -23,7 +24,6 @@ public class MobAIHandler {
 
     private static final String NBT_AI_SETUP = "ed_ai_setup";
 
-    // Public NBT keys used by SoundSystem
     public static final String NBT_SEARCH_STATE    = "ed_search";
     public static final String NBT_SEARCH_TICKS    = "ed_sticks";
     public static final String NBT_LAST_X          = "ed_lx";
@@ -35,12 +35,17 @@ public class MobAIHandler {
     private static final double DETECT_RANGE_SNEAK  = 10.0;
     private static final double FOLLOW_RANGE_NIGHT  = 48.0;
     private static final double FOLLOW_RANGE_DAY    = 32.0;
-    private static final int    SEARCH_ACTIVE_TICKS  = 600;
-    private static final double HEAR_NORMAL  = 10.0;
-    private static final double HEAR_SNEAK   = 4.0;
 
-    // OPT: track last night state to skip redundant attribute updates
-    private boolean lastNightState = false;
+    // FIX: max 2 minutes total search (120 sec = 2400 ticks)
+    // Split: active search 60s, passive linger 60s
+    // Per-mob randomness +-20% applied in assignSearchDuration
+    private static final int SEARCH_ACTIVE_BASE  = 1200; // 60 sec
+    private static final int SEARCH_PASSIVE_BASE = 1200; // 60 sec
+
+    private static final double HEAR_NORMAL = 10.0;
+    private static final double HEAR_SNEAK  = 4.0;
+
+    private boolean lastNightState        = false;
     private boolean nightStateInitialized = false;
 
     // -------------------------------------------------------------------------
@@ -72,9 +77,10 @@ public class MobAIHandler {
     }
 
     private void setupZombie(Zombie zombie) {
+        // FIX: remove vanilla BreakDoorGoal, add our faster version at priority 1
         zombie.goalSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof BreakDoorGoal);
-        zombie.goalSelector.addGoal(1, new FastBreakDoorGoal(zombie, 120));
+        zombie.goalSelector.addGoal(1, new SmartBreakDoorGoal(zombie));
         zombie.goalSelector.addGoal(4, new AdvancedSearchGoal(zombie, 1.0));
         zombie.targetSelector.addGoal(3, new DetectionGoal(zombie, true));
         zombie.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
@@ -90,13 +96,16 @@ public class MobAIHandler {
     }
 
     private void assignSearchDuration(Mob mob) {
-        double rand = 0.8 + mob.getRandom().nextDouble() * 0.4;
-        mob.getPersistentData().putInt(NBT_SEARCH_DURATION,
-            (int)(SEARCH_ACTIVE_TICKS * rand));
+        // Each mob gets unique active + passive duration with +-20% variance
+        double variance = 0.8 + mob.getRandom().nextDouble() * 0.4;
+        int active  = (int)(SEARCH_ACTIVE_BASE  * variance);
+        int passive = (int)(SEARCH_PASSIVE_BASE * variance);
+        mob.getPersistentData().putInt(NBT_SEARCH_DURATION, active);
+        mob.getPersistentData().putInt("ed_pdur", passive);
     }
 
     // -------------------------------------------------------------------------
-    // GROUP ALERT - FIX: only on player melee damage
+    // GROUP ALERT - only on player melee damage
     // -------------------------------------------------------------------------
 
     @SubscribeEvent
@@ -105,8 +114,6 @@ public class MobAIHandler {
         if (zombie instanceof ZombifiedPiglin) return;
         if (zombie.level().isClientSide()) return;
         if (!(zombie.level() instanceof ServerLevel sl)) return;
-
-        // FIX: only react to player attacks, not fire/poison/fall etc
         Entity attacker = event.getSource().getEntity();
         if (!(attacker instanceof Player player)) return;
         if (player.isInvisible() && player.isCrouching()) return;
@@ -132,7 +139,7 @@ public class MobAIHandler {
         long gt = sl.getGameTime();
         boolean isNight = isNight(sl);
 
-        // Footsteps every 20 ticks - sneak mutes only footsteps
+        // Footsteps every 20 ticks
         if (gt % 20 == 0) {
             for (var player : sl.players()) {
                 if (player.isCrouching()) continue;
@@ -145,8 +152,8 @@ public class MobAIHandler {
 
         if (gt % 10 != 0) return;
 
-        // OPT: only update follow range when day/night changes
-        boolean nightChanged = !nightStateInitialized || (isNight != lastNightState);
+        // Update follow range only on day/night change
+        boolean nightChanged = !nightStateInitialized || isNight != lastNightState;
         if (nightChanged) {
             lastNightState = isNight;
             nightStateInitialized = true;
@@ -159,20 +166,18 @@ public class MobAIHandler {
             });
         }
 
-        // AI search state update every 10 ticks
         sl.getEntities().getAll().forEach(entity -> {
             if (!(entity instanceof Mob mob)) return;
             updateSearchState(mob, sl, gt);
         });
     }
 
-    // OPT: pass gameTime to avoid redundant calls
     private void updateSearchState(Mob mob, ServerLevel level, long gt) {
         var tag = mob.getPersistentData();
         int state = tag.getInt(NBT_SEARCH_STATE);
 
+        // Has active target
         if (mob.getTarget() instanceof Player player) {
-            // OPT: check LOS every 20 ticks instead of every 10
             if (gt % 20 == 0) {
                 if (mob.hasLineOfSight(player)) {
                     tag.putDouble(NBT_LAST_X, player.getX());
@@ -182,8 +187,11 @@ public class MobAIHandler {
                     tag.putInt(NBT_SEARCH_TICKS, 0);
                 } else if (!canHearPlayer(mob, player)) {
                     mob.setTarget(null);
-                    tag.putInt(NBT_SEARCH_STATE, 1);
-                    tag.putInt(NBT_SEARCH_TICKS, 0);
+                    // Only enter search state if we actually know where they were
+                    if (tag.contains(NBT_LAST_X)) {
+                        tag.putInt(NBT_SEARCH_STATE, 1);
+                        tag.putInt(NBT_SEARCH_TICKS, 0);
+                    }
                 }
             }
             return;
@@ -193,30 +201,38 @@ public class MobAIHandler {
 
         int ticks = tag.getInt(NBT_SEARCH_TICKS) + 10;
         tag.putInt(NBT_SEARCH_TICKS, ticks);
-        int dur = tag.contains(NBT_SEARCH_DURATION)
-            ? tag.getInt(NBT_SEARCH_DURATION) : SEARCH_ACTIVE_TICKS;
 
-        if (state == 1 && ticks >= dur) {
+        int activeDur  = tag.contains(NBT_SEARCH_DURATION) ? tag.getInt(NBT_SEARCH_DURATION) : SEARCH_ACTIVE_BASE;
+        int passiveDur = tag.contains("ed_pdur")            ? tag.getInt("ed_pdur")           : SEARCH_PASSIVE_BASE;
+
+        if (state == 1 && ticks >= activeDur) {
+            // Move to passive lingering
             tag.putInt(NBT_SEARCH_STATE, 2);
             tag.putInt(NBT_SEARCH_TICKS, 0);
-        } else if (state == 2 && ticks >= dur) {
-            tag.putInt(NBT_SEARCH_STATE, 0);
-            tag.putInt(NBT_SEARCH_TICKS, 0);
-            tag.remove(NBT_LAST_X);
-            tag.remove(NBT_LAST_Y);
-            tag.remove(NBT_LAST_Z);
+        } else if (state == 2 && ticks >= passiveDur) {
+            // FIX: fully give up - clear ALL search data so goal stops
+            clearSearch(tag);
             return;
         }
 
-        // Spot visible player while searching
+        // While searching, spot a visible nearby player
         if (tag.contains(NBT_LAST_X)) {
             Player nearby = level.getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearby != null && !nearby.isCreative() && !nearby.isSpectator()
              && mob.hasLineOfSight(nearby)) {
                 mob.setTarget(nearby);
-                tag.putInt(NBT_SEARCH_STATE, 0);
+                clearSearch(tag);
             }
         }
+    }
+
+    // FIX: single method to clear all search state - prevents goal from lingering
+    private static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
+        tag.putInt(NBT_SEARCH_STATE, 0);
+        tag.putInt(NBT_SEARCH_TICKS, 0);
+        tag.remove(NBT_LAST_X);
+        tag.remove(NBT_LAST_Y);
+        tag.remove(NBT_LAST_Z);
     }
 
     private boolean canHearPlayer(Mob mob, Player player) {
@@ -276,14 +292,47 @@ public class MobAIHandler {
         }
     }
 
+    /**
+     * FIX: Smart door breaking.
+     * Zombie breaks door ONLY when it blocks path to target.
+     * Works day and night (not time-restricted like vanilla).
+     * Breaks faster (60 ticks = 3 sec vs vanilla 240 = 12 sec).
+     */
+    static class SmartBreakDoorGoal extends BreakDoorGoal {
+
+        public SmartBreakDoorGoal(Mob mob) {
+            // 60 ticks = 3 sec, only on Hard difficulty
+            super(mob, 60, d -> d == Difficulty.HARD);
+        }
+
+        @Override
+        public boolean canUse() {
+            // Only break if mob has a target - won't break random doors
+            if (mob.getTarget() == null) return false;
+            return super.canUse();
+        }
+
+        @Override
+        public boolean canContinueToUse() {
+            // Stop if target gone
+            if (mob.getTarget() == null) return false;
+            return super.canContinueToUse();
+        }
+    }
+
+    /**
+     * Advanced search goal.
+     * FIX: checks NBT_LAST_X exists AND state > 0 to decide if active.
+     * Clears properly when state goes to 0.
+     * Calmer movement speed.
+     */
     static class AdvancedSearchGoal extends Goal {
         private final Mob mob;
         private final double speed;
         private BlockPos target = null;
         private int localTick   = 0;
         private int stuckTicks  = 0;
-        // OPT: store coords instead of Vec3 to avoid allocation every tick
-        private double lastX = Double.MIN_VALUE, lastY, lastZ;
+        private double lastX = Double.MIN_VALUE, lastZ;
         private static final int STUCK_THRESHOLD = 60;
 
         public AdvancedSearchGoal(Mob mob, double speed) {
@@ -295,6 +344,7 @@ public class MobAIHandler {
         public boolean canUse() {
             if (mob.getTarget() != null) return false;
             var tag = mob.getPersistentData();
+            // FIX: require BOTH state > 0 AND last position known
             return tag.getInt(NBT_SEARCH_STATE) > 0 && tag.contains(NBT_LAST_X);
         }
 
@@ -302,13 +352,14 @@ public class MobAIHandler {
         public boolean canContinueToUse() {
             if (mob.getTarget() != null) return false;
             var tag = mob.getPersistentData();
+            // FIX: stop immediately when state cleared
             return tag.getInt(NBT_SEARCH_STATE) > 0 && tag.contains(NBT_LAST_X);
         }
 
         @Override
         public void start() {
             localTick = 0; stuckTicks = 0;
-            lastX = mob.getX(); lastY = mob.getY(); lastZ = mob.getZ();
+            lastX = mob.getX(); lastZ = mob.getZ();
             mob.setAggressive(false);
             pickTarget();
         }
@@ -318,7 +369,7 @@ public class MobAIHandler {
             localTick++;
             mob.setAggressive(false);
 
-            // OPT: stuck check every 10 ticks using raw coords (no Vec3 alloc)
+            // Stuck detection every 10 ticks using raw coords
             if (localTick % 10 == 0) {
                 double dx = mob.getX() - lastX;
                 double dz = mob.getZ() - lastZ;
@@ -326,16 +377,13 @@ public class MobAIHandler {
                     stuckTicks += 10;
                 } else {
                     stuckTicks = 0;
-                    lastX = mob.getX(); lastY = mob.getY(); lastZ = mob.getZ();
+                    lastX = mob.getX(); lastZ = mob.getZ();
                 }
-
                 if (stuckTicks >= STUCK_THRESHOLD) {
                     stuckTicks = 0;
                     if (localTick > 200) {
-                        var tag = mob.getPersistentData();
-                        tag.putInt(NBT_SEARCH_STATE, 0);
-                        tag.putInt(NBT_SEARCH_TICKS, 0);
-                        tag.remove(NBT_LAST_X); tag.remove(NBT_LAST_Y); tag.remove(NBT_LAST_Z);
+                        // Give up completely
+                        clearSearch(mob.getPersistentData());
                         return;
                     }
                     pickTarget();
@@ -353,9 +401,10 @@ public class MobAIHandler {
             }
 
             if (target != null) {
+                // FIX: calmer speed - state 1 = 70% speed, state 2 = 50% (passive linger)
+                double spd = state == 1 ? speed * 0.7 : speed * 0.5;
                 mob.getNavigation().moveTo(
-                    target.getX()+0.5, target.getY(), target.getZ()+0.5,
-                    state == 1 ? speed : speed * 0.6);
+                    target.getX()+0.5, target.getY(), target.getZ()+0.5, spd);
             }
         }
 
@@ -365,9 +414,9 @@ public class MobAIHandler {
             double lx = tag.getDouble(NBT_LAST_X);
             double lz = tag.getDouble(NBT_LAST_Z);
             int state = tag.getInt(NBT_SEARCH_STATE);
-            double radius = state == 1 ? 6.0 : 12.0;
+            // Active = tight circle 5 blocks, passive = wider wander 10 blocks
+            double radius = state == 1 ? 5.0 : 10.0;
 
-            // OPT: max 2 path attempts (was 5) - cheaper
             for (int attempt = 0; attempt < 2; attempt++) {
                 double angle = mob.getRandom().nextDouble() * Math.PI * 2;
                 double dist  = radius * (0.4 + mob.getRandom().nextDouble() * 0.6);
@@ -391,21 +440,6 @@ public class MobAIHandler {
             mob.setAggressive(false);
             target = null; localTick = 0; stuckTicks = 0;
             lastX = Double.MIN_VALUE;
-        }
-    }
-
-    static class FastBreakDoorGoal extends BreakDoorGoal {
-        public FastBreakDoorGoal(Mob mob, int ticks) {
-            super(mob, ticks, d -> d == Difficulty.HARD);
-        }
-        @Override
-        public boolean canUse() {
-            Level level = mob.level();
-            if (level.dimension() == Level.OVERWORLD) {
-                long time = level.getDayTime() % 24000;
-                if (time < 13000 || time > 23000) return false;
-            }
-            return super.canUse();
         }
     }
 
