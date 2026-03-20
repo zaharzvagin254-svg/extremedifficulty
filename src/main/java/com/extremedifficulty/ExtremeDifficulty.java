@@ -4,6 +4,7 @@ import net.minecraft.nbt.CompoundTag;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.LivingEntity;
@@ -20,7 +21,6 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.MinecraftForge;
-import net.minecraftforge.event.ServerChatEvent;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
@@ -51,7 +51,6 @@ public class ExtremeDifficulty {
     private static final double BOSS_HP_MULT     = 1.70;
     private static final double BOSS_DAMAGE_MULT = 1.40;
 
-    // FIX: брут-пиглин — урон только +10% вместо x1.5 (слишком смертоносно)
     private static final double BRUTE_DMG_MULT = 1.10;
 
     private static final double DAY_AGGRO_RANGE   = 32.0;
@@ -70,43 +69,39 @@ public class ExtremeDifficulty {
         event.enqueueWork(ClientSetup::registerRenderers);
     }
 
-    // ─── При старте сервера — ставим Hard и показываем EXTREME ───────────────
+    // ─── Старт сервера ────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
         MinecraftServer server = event.getServer();
 
-        // Принудительно Hard
-        server.overworld().getLevelData().setDifficulty(Difficulty.HARD);
+        // FIX 2: используем server.setDifficulty() — это блокирует /difficulty
+        server.setDifficulty(Difficulty.HARD, true);
 
-        // Сообщение в консоль
         LOGGER.info("[ExtremeDifficulty] Difficulty locked to HARD (EXTREME MODE)");
 
-        // Отправляем всем игрокам системное сообщение
-        server.getPlayerList().getPlayers().forEach(player ->
-            player.sendSystemMessage(Component.literal(
-                "\u00a74[\u00a7cEXTREME DIFFICULTY\u00a74] \u00a7cThe world is unforgiving. Good luck."
-            ))
-        );
+        // FIX 3: убрали рассылку игрокам отсюда — при старте их ещё нет
+        // Сообщение теперь только в onPlayerJoin
     }
 
-    // ─── При входе игрока — показываем статус сложности ──────────────────────
+    // ─── Вход игрока ─────────────────────────────────────────────────────────
     @SubscribeEvent
     public void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
-        if (!(event.getEntity() instanceof net.minecraft.server.level.ServerPlayer sp)) return;
+        // FIX 4: проверяем что это серверный игрок чтобы не крашнуться на клиенте
+        if (!(event.getEntity() instanceof ServerPlayer sp)) return;
 
-        // Показываем в tab-листе кастомный footer
+        // Tab-лист: header + footer
         sp.connection.send(new net.minecraft.network.protocol.game.ClientboundTabListPacket(
             Component.literal("\u00a74\u00a7l\u2620 EXTREME DIFFICULTY \u2620"),
             Component.literal(
-                "\u00a7cDay: HP+30% DMG+30% Speed+12%\n" +
-                "\u00a74Night: HP+50% DMG+50% Speed+20%\n" +
+                "\u00a7cDay:   HP+30%  DMG+30%  Speed+12%\n" +
+                "\u00a74Night: HP+50%  DMG+50%  Speed+20%\n" +
                 "\u00a77Aggro range doubled at night"
             )
         ));
 
-        // Приветственное сообщение
+        // Приветственное сообщение + напоминание о сложности
         sp.sendSystemMessage(Component.literal(
-            "\u00a74[EXTREME DIFFICULTY] \u00a7cMobs are stronger. Night is dangerous."
+            "\u00a74[\u00a7cEXTREME DIFFICULTY\u00a74] \u00a7cMobs are stronger. Night is dangerous."
         ));
     }
 
@@ -159,7 +154,7 @@ public class ExtremeDifficulty {
         });
     }
 
-    // ─── Применяем баффы один раз через NBT ──────────────────────────────────
+    // ─── Применяем баффы один раз ─────────────────────────────────────────────
     private static void applyBuffsOnce(LivingEntity living, boolean night) {
         CompoundTag tag = living.getPersistentData();
         if (tag.getBoolean(NBT_BUFFED) && tag.getBoolean(NBT_WAS_NIGHT) == night) return;
@@ -172,9 +167,9 @@ public class ExtremeDifficulty {
         double mult      = night ? NIGHT_MULT : DAY_MULT;
         double speedMult = 1.0 + (mult - 1.0) * SPEED_FRACTION;
 
-        // Боссы — только HP и урон
+        // Боссы
         if (living instanceof WitherBoss || living instanceof EnderDragon) {
-            setMaxHp(living, baseHp(living)  * BOSS_HP_MULT);
+            setMaxHp(living, baseHp(living) * BOSS_HP_MULT);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * BOSS_DAMAGE_MULT);
             return;
         }
@@ -183,54 +178,53 @@ public class ExtremeDifficulty {
         if (living instanceof Ghast || living instanceof WitherSkeleton
          || living instanceof Skeleton || living instanceof Stray
          || living instanceof Pillager || living instanceof Evoker) {
-            setMaxHp(living, baseHp(living)  * mult);
+            setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             return;
         }
 
-        // Большие медленные — половина скорости
+        // Большие медленные
         if (living instanceof Ravager || living instanceof ElderGuardian) {
-            setMaxHp(living, baseHp(living)  * mult);
+            setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
-            // FIX 3: используем реальную базовую скорость моба из NBT
             setAttr(living, Attributes.MOVEMENT_SPEED,
                 baseSpd(living) * (1.0 + (mult - 1.0) * SPEED_FRACTION * 0.5));
             return;
         }
 
-        // Водные
+        // Водные — проверяем ДО Zombie чтобы Drowned не попал в Zombie-блок
+        // FIX 6/7: Drowned extends Zombie — должен быть выше Zombie-проверки
         if (living instanceof Drowned || living instanceof Guardian) {
-            setMaxHp(living, baseHp(living)  * mult);
+            setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED,
                 baseSpd(living) * (1.0 + (mult - 1.0) * SPEED_FRACTION * 0.7));
             return;
         }
 
-        // FIX 4: Эндермен — отдельно, у него есть ATTACK_DAMAGE (7 в ванилле)
+        // Эндермен — отдельно
         if (living instanceof EnderMan) {
-            setMaxHp(living, baseHp(living)  * mult);
+            setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
             return;
         }
 
-        // FIX 5: Крипер — только HP, урон идёт через взрыв (нет атрибута урона)
+        // Крипер — только HP и скорость (урон через взрыв, нет атрибута)
         if (living instanceof Creeper) {
             setMaxHp(living, baseHp(living) * mult);
-            // скорость слегка увеличиваем
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
             return;
         }
 
-        // FIX 6: Ведьма — только HP и скорость, урон через зелья (нет атрибута)
+        // Ведьма — только HP и скорость (урон через зелья, нет атрибута)
         if (living instanceof Witch) {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
             return;
         }
 
-        // FIX 7: Брут-пиглин — урон только +10%, HP полный
+        // Брут-пиглин — урон только +10%
         if (living instanceof PiglinBrute) {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * BRUTE_DMG_MULT);
@@ -238,13 +232,35 @@ public class ExtremeDifficulty {
             return;
         }
 
-        // Стандартные ближние — полный бафф
-        if (living instanceof Zombie || living instanceof Husk
-         || living instanceof Spider || living instanceof CaveSpider
+        // FIX 6: ZombifiedPiglin extends Zombie — проверяем ДО Zombie
+        if (living instanceof ZombifiedPiglin) {
+            setMaxHp(living, baseHp(living) * mult);
+            setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
+            setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
+            return;
+        }
+
+        // FIX 7: Husk extends Zombie — проверяем ДО Zombie
+        if (living instanceof Husk) {
+            setMaxHp(living, baseHp(living) * mult);
+            setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
+            setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
+            return;
+        }
+
+        // FIX 9: CaveSpider extends Spider — проверяем ДО Spider
+        if (living instanceof CaveSpider) {
+            setMaxHp(living, baseHp(living) * mult);
+            setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
+            setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
+            return;
+        }
+
+        // Стандартные ближние
+        if (living instanceof Zombie || living instanceof Spider
          || living instanceof Vindicator
-         || living instanceof ZombifiedPiglin
          || living instanceof Piglin || living instanceof Blaze) {
-            setMaxHp(living, baseHp(living)  * mult);
+            setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
         }
@@ -256,8 +272,7 @@ public class ExtremeDifficulty {
         if (attr != null) attr.setBaseValue(night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE);
     }
 
-    // ─── Геттеры базовых значений из NBT ─────────────────────────────────────
-    // FIX 3: каждый геттер читает реальный атрибут моба при первом вызове
+    // ─── Геттеры базовых значений ─────────────────────────────────────────────
 
     private static double baseHp(LivingEntity living) {
         CompoundTag tag = living.getPersistentData();
@@ -272,8 +287,6 @@ public class ExtremeDifficulty {
         CompoundTag tag = living.getPersistentData();
         if (!tag.contains("ed_base_dmg")) {
             AttributeInstance attr = living.getAttribute(Attributes.ATTACK_DAMAGE);
-            // FIX 4: если атрибут есть — берём реальное значение
-            // если нет (крипер, ведьма) — 0.0 чтобы не применять
             tag.putDouble("ed_base_dmg", attr != null ? attr.getBaseValue() : 0.0);
         }
         return tag.getDouble("ed_base_dmg");
@@ -283,13 +296,13 @@ public class ExtremeDifficulty {
         CompoundTag tag = living.getPersistentData();
         if (!tag.contains("ed_base_spd")) {
             AttributeInstance attr = living.getAttribute(Attributes.MOVEMENT_SPEED);
-            // FIX 3: реальная скорость моба, не дефолт 0.23
             tag.putDouble("ed_base_spd", attr != null ? attr.getBaseValue() : 0.23);
         }
         return tag.getDouble("ed_base_spd");
     }
 
     // ─── Сеттеры ─────────────────────────────────────────────────────────────
+
     private static void setMaxHp(LivingEntity living, double newMax) {
         AttributeInstance attr = living.getAttribute(Attributes.MAX_HEALTH);
         if (attr == null) return;
@@ -300,7 +313,7 @@ public class ExtremeDifficulty {
     }
 
     private static void setAttr(LivingEntity living, Attribute attribute, double value) {
-        if (value <= 0) return; // не применяем нулевые значения
+        if (value <= 0) return;
         AttributeInstance attr = living.getAttribute(attribute);
         if (attr != null) attr.setBaseValue(value);
     }
