@@ -19,6 +19,7 @@ import net.minecraft.world.entity.monster.piglin.Piglin;
 import net.minecraft.world.entity.monster.piglin.PiglinBrute;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.phys.AABB;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
@@ -47,7 +48,6 @@ public class ExtremeDifficulty {
     private static final double DAY_MULT       = 1.30;
     private static final double NIGHT_MULT     = 1.50;
     private static final double SPEED_FRACTION = 0.4;
-
     private static final double BOSS_HP_MULT     = 1.70;
     private static final double BOSS_DAMAGE_MULT = 1.40;
     private static final double BRUTE_DMG_MULT   = 1.10;
@@ -57,9 +57,8 @@ public class ExtremeDifficulty {
 
     public ExtremeDifficulty() {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
-        if (FMLEnvironment.dist == Dist.CLIENT) {
+        if (FMLEnvironment.dist == Dist.CLIENT)
             modBus.addListener(this::onClientSetup);
-        }
         MinecraftForge.EVENT_BUS.register(this);
         MinecraftForge.EVENT_BUS.register(new SpawnHandler());
         MinecraftForge.EVENT_BUS.register(new MobAIHandler());
@@ -73,15 +72,13 @@ public class ExtremeDifficulty {
 
     @SubscribeEvent
     public void onServerStarted(ServerStartedEvent event) {
-        MinecraftServer server = event.getServer();
-        server.setDifficulty(Difficulty.HARD, true);
-        LOGGER.info("[ExtremeDifficulty] Difficulty locked to HARD (EXTREME MODE)");
+        event.getServer().setDifficulty(Difficulty.HARD, true);
+        LOGGER.info("[ExtremeDifficulty] Difficulty locked to HARD");
     }
 
     @SubscribeEvent
     public void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer sp)) return;
-
         sp.connection.send(new net.minecraft.network.protocol.game.ClientboundTabListPacket(
             Component.literal("\u00a74\u00a7l\u2620 EXTREME DIFFICULTY \u2620"),
             Component.literal(
@@ -90,7 +87,6 @@ public class ExtremeDifficulty {
                 "\u00a77Aggro range doubled at night"
             )
         ));
-
         sp.sendSystemMessage(Component.literal(
             "\u00a74[\u00a7cEXTREME DIFFICULTY\u00a74] \u00a7cMobs are stronger. Night is dangerous."
         ));
@@ -114,12 +110,13 @@ public class ExtremeDifficulty {
         if (serverLevel.getGameTime() % 100 != 0) return;
 
         boolean night = isNight(serverLevel);
-        double aggroRange = night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE;
+
+        // OPT: skip aggro loop if no players in this level
+        List<ServerPlayer> players = serverLevel.players();
+        boolean hasPlayers = !players.isEmpty();
 
         serverLevel.getEntities().getAll().forEach(entity -> {
             if (!(entity instanceof LivingEntity living)) return;
-
-            applyAggroRange(living, night);
 
             CompoundTag tag = living.getPersistentData();
             if (tag.getBoolean(NBT_WAS_NIGHT) != night) {
@@ -127,24 +124,36 @@ public class ExtremeDifficulty {
                 applyBuffsOnce(living, night);
             }
 
-            // Performance: use distanceToSqr to avoid sqrt
-            if (living instanceof Mob mob && mob.getTarget() == null) {
+            // OPT: skip aggro range if no players present
+            if (hasPlayers) applyAggroRange(living, night);
+        });
+
+        // Aggro loop - OPT: use AABB centered on mob, not inflate on entity BB
+        if (hasPlayers) {
+            double range = night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE;
+            serverLevel.getEntities().getAll().forEach(entity -> {
+                if (!(entity instanceof Mob mob)) return;
+                if (mob.getTarget() != null) return;
+                // OPT: AABB centered on mob position (not inflated entity BB)
+                AABB searchBox = new AABB(
+                    mob.getX() - range, mob.getY() - range, mob.getZ() - range,
+                    mob.getX() + range, mob.getY() + range, mob.getZ() + range
+                );
                 List<Player> nearby = serverLevel.getEntitiesOfClass(
-                    Player.class,
-                    mob.getBoundingBox().inflate(aggroRange),
+                    Player.class, searchBox,
                     p -> !p.isCreative() && !p.isSpectator() && p.isAlive()
                 );
-                if (!nearby.isEmpty()) {
-                    Player nearest = nearby.stream()
-                        .min((a, b) -> Double.compare(
-                            mob.distanceToSqr(a),
-                            mob.distanceToSqr(b)))
-                        .orElse(null);
-                    if (nearest != null) mob.setTarget(nearest);
-                }
-            }
-        });
+                if (nearby.isEmpty()) return;
+                Player nearest = nearby.stream()
+                    .min((a, b) -> Double.compare(
+                        mob.distanceToSqr(a), mob.distanceToSqr(b)))
+                    .orElse(null);
+                if (nearest != null) mob.setTarget(nearest);
+            });
+        }
     }
+
+    // -------------------------------------------------------------------------
 
     private static void applyBuffsOnce(LivingEntity living, boolean night) {
         CompoundTag tag = living.getPersistentData();
@@ -174,15 +183,14 @@ public class ExtremeDifficulty {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED,
-                baseSpd(living) * (1.0 + (mult - 1.0) * SPEED_FRACTION * 0.5));
+                baseSpd(living) * (1.0 + (mult-1.0)*SPEED_FRACTION*0.5));
             return;
         }
-        // Drowned extends Zombie - must be before Zombie check
         if (living instanceof Drowned || living instanceof Guardian) {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED,
-                baseSpd(living) * (1.0 + (mult - 1.0) * SPEED_FRACTION * 0.7));
+                baseSpd(living) * (1.0 + (mult-1.0)*SPEED_FRACTION*0.7));
             return;
         }
         if (living instanceof EnderMan) {
@@ -207,21 +215,18 @@ public class ExtremeDifficulty {
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
             return;
         }
-        // ZombifiedPiglin extends Zombie - must be before Zombie check
         if (living instanceof ZombifiedPiglin) {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
             return;
         }
-        // Husk extends Zombie - must be before Zombie check
         if (living instanceof Husk) {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
             setAttr(living, Attributes.MOVEMENT_SPEED, baseSpd(living) * speedMult);
             return;
         }
-        // CaveSpider extends Spider - must be before Spider check
         if (living instanceof CaveSpider) {
             setMaxHp(living, baseHp(living) * mult);
             setAttr(living, Attributes.ATTACK_DAMAGE, baseDmg(living) * mult);
@@ -276,7 +281,7 @@ public class ExtremeDifficulty {
         double oldMax = attr.getBaseValue();
         attr.setBaseValue(newMax);
         if (oldMax > 0)
-            living.setHealth((float) Math.min(living.getHealth() * (newMax / oldMax), newMax));
+            living.setHealth((float) Math.min(living.getHealth()*(newMax/oldMax), newMax));
     }
 
     private static void setAttr(LivingEntity living, Attribute attribute, double value) {
