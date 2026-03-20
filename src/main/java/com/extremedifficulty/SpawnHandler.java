@@ -2,13 +2,12 @@ package com.extremedifficulty;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.MobSpawnType;
-import net.minecraft.world.entity.monster.Monster;
 import net.minecraft.world.entity.monster.Zombie;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.levelgen.Heightmap;
-import net.minecraft.world.phys.AABB;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
 
@@ -21,16 +20,17 @@ public class SpawnHandler {
     private static final int ZOMBIE_MAX_GROUP = 6;
     private static final int SPAWN_MIN_DIST = 24;
     private static final int SPAWN_MAX_DIST = 48;
-    private static final int MAX_MOBS_NEARBY = 30;
 
-    // Performance: reuse Random instance instead of creating new each spawn
+    // FIX: count only zombies (not all monsters) so the cap isn't hit
+    // by vanilla skeleton/spider spawns blocking our zombie waves
+    private static final int MAX_ZOMBIES_NEARBY = 20;
+
     private final Random random = new Random();
 
     @SubscribeEvent
     public void onServerTick(TickEvent.LevelTickEvent event) {
         if (event.phase != TickEvent.Phase.END) return;
         if (!(event.level instanceof ServerLevel serverLevel)) return;
-
         if (serverLevel.dimension() != Level.OVERWORLD) return;
 
         long time = serverLevel.getDayTime() % 24000;
@@ -38,21 +38,21 @@ public class SpawnHandler {
 
         if (serverLevel.getGameTime() % ZOMBIE_SPAWN_INTERVAL != 0) return;
 
-        for (net.minecraft.server.level.ServerPlayer player : serverLevel.players()) {
+        for (ServerPlayer player : serverLevel.players()) {
             if (player.isCreative() || player.isSpectator()) continue;
 
-            // Performance: use inflate on player BB instead of new AABB
-            int nearbyMobs = serverLevel.getEntitiesOfClass(
-                Monster.class,
+            // FIX: count only zombies nearby, not all monsters
+            int nearbyZombies = serverLevel.getEntitiesOfClass(
+                Zombie.class,
                 player.getBoundingBox().inflate(SPAWN_MAX_DIST),
-                e -> true
+                z -> true
             ).size();
 
-            if (nearbyMobs >= MAX_MOBS_NEARBY) continue;
+            if (nearbyZombies >= MAX_ZOMBIES_NEARBY) continue;
 
             int toSpawn = Math.min(
                 ZOMBIE_MIN_GROUP + random.nextInt(ZOMBIE_MAX_GROUP - ZOMBIE_MIN_GROUP + 1),
-                MAX_MOBS_NEARBY - nearbyMobs
+                MAX_ZOMBIES_NEARBY - nearbyZombies
             );
 
             for (int i = 0; i < toSpawn; i++) {
@@ -61,8 +61,7 @@ public class SpawnHandler {
         }
     }
 
-    private void spawnZombieNearPlayer(ServerLevel level,
-                                        net.minecraft.server.level.ServerPlayer player) {
+    private void spawnZombieNearPlayer(ServerLevel level, ServerPlayer player) {
         double angle = random.nextDouble() * Math.PI * 2;
         double dist  = SPAWN_MIN_DIST + random.nextDouble() * (SPAWN_MAX_DIST - SPAWN_MIN_DIST);
 
@@ -71,14 +70,11 @@ public class SpawnHandler {
 
         int y = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, x, z);
 
-        // Do not spawn in unloaded chunks
         if (y <= 0) return;
 
         BlockPos pos = new BlockPos(x, y, z);
         if (!level.getBlockState(pos).isAir()) return;
         if (!level.getBlockState(pos.below()).isSolidRender(level, pos.below())) return;
-
-        // Do not spawn in light
         if (level.getMaxLocalRawBrightness(pos) > 7) return;
 
         Zombie zombie = EntityType.ZOMBIE.create(level);
@@ -88,7 +84,6 @@ public class SpawnHandler {
         zombie.finalizeSpawn(level, level.getCurrentDifficultyAt(pos),
             MobSpawnType.NATURAL, null, null);
 
-        // Save base HP for buff system
         if (!zombie.getPersistentData().contains("ed_base_hp")) {
             var attr = zombie.getAttribute(
                 net.minecraft.world.entity.ai.attributes.Attributes.MAX_HEALTH);
