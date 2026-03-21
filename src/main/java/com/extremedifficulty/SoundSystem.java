@@ -172,7 +172,21 @@ public class SoundSystem {
             if (distSq > effectiveRadius * effectiveRadius) return;
 
             if (source instanceof Player p && !p.isCreative() && !p.isSpectator()) {
-                mob.setTarget(p);
+                // FIX: only target player if mob has LOS to them
+                // Sound goes through walls but targeting requires visibility
+                // Exception: if sound source is very close (< 4 blocks) - mob reacts regardless
+                double dSq = mob.distanceToSqr(soundPos.x, soundPos.y, soundPos.z);
+                if (dSq < 16.0 || mob.hasLineOfSight(p)) {
+                    mob.setTarget(p);
+                } else {
+                    // Heard sound but can't see - go investigate the sound position
+                    var tag = mob.getPersistentData();
+                    tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
+                    tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
+                    tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
+                    tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
+                    tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
+                }
             } else {
                 var tag = mob.getPersistentData();
                 tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
