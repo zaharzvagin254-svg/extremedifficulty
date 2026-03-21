@@ -97,44 +97,78 @@ public class MobAIHandler {
         assignSearchDuration((Mob) entity);
     }
 
-    // Zombie + Husk: keep ALL vanilla targeting, just add our extra goals
+    // Detection range: 18 blocks (day and night same)
+    // Follow range: 48 blocks (set as attribute, day and night same)
+    private static final double DETECTION_RANGE = 18.0;
+    private static final double FOLLOW_RANGE    = 48.0;
+    private static final double SNEAK_RANGE     = 8.0; // sneaking reduces detection
+
+    private void setupRanges(Mob mob) {
+        var attr = mob.getAttribute(
+            net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE);
+        if (attr != null) attr.setBaseValue(FOLLOW_RANGE);
+    }
+
     private void addZombieGoals(Zombie mob, boolean breakDoors) {
+        // Remove vanilla targeting - replace with ours (fixed 18 block detection)
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         if (breakDoors) {
-            // Replace vanilla BreakDoorGoal with our smarter version
             mob.goalSelector.getAvailableGoals().removeIf(
                 w -> w.getGoal() instanceof BreakDoorGoal);
             mob.goalSelector.addGoal(1, new SmartBreakDoorGoal(mob));
         }
-        // Add our search/patrol/flank goals
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         if (breakDoors) mob.goalSelector.addGoal(3, new FlankGoal(mob));
-
-
+        // Our detection goal: LOS-based, 18 block radius
+        mob.targetSelector.addGoal(2, new DetectionGoal(mob));
+        // Vanilla villager/trader targeting stays (for zombie only)
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+            mob, Villager.class, true));
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+            mob, WanderingTrader.class, true));
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
+        setupRanges(mob);
     }
 
     private void addDrownedGoals(Drowned drowned) {
+        drowned.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         drowned.goalSelector.addGoal(4, new AdvancedSearchGoal(drowned, 1.0));
         drowned.goalSelector.addGoal(5, new MemoryPatrolGoal(drowned));
+        drowned.targetSelector.addGoal(2, new DetectionGoal(drowned));
+        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+            drowned, Villager.class, true));
+        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
+            drowned, WanderingTrader.class, true));
         drowned.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
+        setupRanges(drowned);
     }
 
     private void addArcherGoals(Mob mob) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
         mob.goalSelector.addGoal(3, new SafeKeepDistanceGoal(mob, 6.0, 14.0));
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
+        mob.targetSelector.addGoal(2, new DetectionGoal(mob));
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.5f);
+        setupRanges(mob);
     }
 
     private void addBasicGoals(Mob mob, boolean keepsDistance) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         if (keepsDistance)
             mob.goalSelector.addGoal(2, new SafeKeepDistanceGoal(mob, 8.0, 12.0));
+        mob.targetSelector.addGoal(2, new DetectionGoal(mob));
         mob.getNavigation().setMaxVisitedNodesMultiplier(
             mob instanceof Spider ? 3.0f : 2.0f);
+        setupRanges(mob);
     }
 
     private void assignSearchDuration(Mob mob) {
@@ -330,6 +364,39 @@ public class MobAIHandler {
     // =========================================================================
     // GOALS
     // =========================================================================
+
+    /**
+     * DetectionGoal: replaces vanilla NearestAttackableTargetGoal<Player>.
+     * Fixed 18 block detection radius, same day and night.
+     * Sneaking reduces range to 8 blocks.
+     * Uses COLLIDER raycast - won't see through solid walls.
+     */
+    static class DetectionGoal extends NearestAttackableTargetGoal<Player> {
+        private final net.minecraft.world.entity.ai.targeting.TargetingConditions
+            normalCond, sneakCond;
+
+        public DetectionGoal(Mob mob) {
+            super(mob, Player.class, 10, true, false, null);
+            this.normalCond = net.minecraft.world.entity.ai.targeting.TargetingConditions
+                .forCombat().range(DETECTION_RANGE);
+            this.sneakCond  = net.minecraft.world.entity.ai.targeting.TargetingConditions
+                .forCombat().range(SNEAK_RANGE);
+        }
+
+        @Override
+        public boolean canUse() {
+            Player nearest = mob.level().getNearestPlayer(mob, DETECTION_RANGE);
+            if (nearest == null || nearest.isCreative()
+             || nearest.isSpectator() || nearest.isInvisible()) return false;
+            this.targetConditions = nearest.isCrouching() ? sneakCond : normalCond;
+            if (!super.canUse()) return false;
+            // COLLIDER raycast - prevents detection through solid blocks
+            var clip = mob.level().clip(new ClipContext(
+                mob.getEyePosition(), nearest.getEyePosition(),
+                ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mob));
+            return clip.getType() == HitResult.Type.MISS;
+        }
+    }
 
     // Hear goal - always active, but longer range at night
     static class SkeletonCoverGoal extends Goal {
