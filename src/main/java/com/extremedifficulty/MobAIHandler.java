@@ -280,15 +280,15 @@ public class MobAIHandler {
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
                 if (mob.hasLineOfSight(player)) {
+                    // Can see player - update last known position, keep target
                     tag.putDouble(NBT_LAST_X, player.getX());
                     tag.putDouble(NBT_LAST_Y, player.getY());
                     tag.putDouble(NBT_LAST_Z, player.getZ());
                     tag.putInt(NBT_SEARCH_STATE, 0);
                     tag.putInt(NBT_SEARCH_TICKS, 0);
                 } else {
-                    // No LOS - but if player is very close (< 6 blocks) keep chasing
-                    // Fixes: losing target through glass at short range while sneaking
-                    if (mob.distanceToSqr(player) < 36.0) return;
+                    // No LOS at all - lose target, enter search state
+                    // canHear only keeps target if player is walking nearby
                     boolean canHear = canHearPlayer(mob, player);
                     if (!canHear) {
                         mob.setTarget(null);
@@ -297,6 +297,7 @@ public class MobAIHandler {
                             tag.putInt(NBT_SEARCH_TICKS, 0);
                         }
                     }
+                    // If can hear (player walking loudly nearby) - keep target briefly
                 }
             }
             return;
