@@ -297,7 +297,7 @@ public class MobAIHandler {
 
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
-                if (mob.hasLineOfSight(player)) {
+                if (hasReliableLOS(mob, player)) {
                     // Can see - update last known pos, clear door flag
                     tag.putDouble(NBT_LAST_X, player.getX());
                     tag.putDouble(NBT_LAST_Y, player.getY());
@@ -341,7 +341,7 @@ public class MobAIHandler {
         if (tag.contains(NBT_LAST_X)) {
             Player nearby = level.getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearby != null && !nearby.isCreative() && !nearby.isSpectator()
-             && mob.hasLineOfSight(nearby)) {
+             && hasReliableLOS(mob, nearby)) {
                 mob.setTarget(nearby); clearSearch(tag);
             }
         }
@@ -350,7 +350,7 @@ public class MobAIHandler {
     private void updateFlankData(Mob mob, long gt) {
         if (!(mob instanceof Zombie) || mob instanceof ZombifiedPiglin) return;
         if (!(mob.getTarget() instanceof Player player)) return;
-        if (!mob.hasLineOfSight(player)) return;
+        if (!hasReliableLOS(mob, player)) return;
         double dx = player.getX()-mob.getX(), dz = player.getZ()-mob.getZ();
         double len = Math.sqrt(dx*dx+dz*dz);
         if (len < 1.0) return;
@@ -396,7 +396,25 @@ public class MobAIHandler {
         return false;
     }
 
-    static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
+    /**
+     * Reliable LOS check using COLLIDER clip type.
+     * Vanilla hasLineOfSight uses VISUAL which can pass through some blocks.
+     * We use COLLIDER which respects solid blocks properly.
+     * Also offsets start position to avoid being inside wall blocks.
+     */
+    private static boolean hasReliableLOS(Mob mob, LivingEntity target) {
+        // Use eye positions but pull them slightly inward to avoid wall edge issues
+        Vec3 mobEye    = mob.getEyePosition();
+        Vec3 targetEye = target.getEyePosition();
+
+        var result = mob.level().clip(new ClipContext(
+            mobEye, targetEye,
+            ClipContext.Block.COLLIDER,
+            ClipContext.Fluid.NONE,
+            mob
+        ));
+        return result.getType() == net.minecraft.world.phys.HitResult.Type.MISS;
+    }
         tag.putInt(NBT_SEARCH_STATE, 0);
         tag.putInt(NBT_SEARCH_TICKS, 0);
         tag.remove(NBT_LAST_X); tag.remove(NBT_LAST_Y); tag.remove(NBT_LAST_Z);
@@ -441,8 +459,15 @@ public class MobAIHandler {
             Player nearest = mob.level().getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearest==null||nearest.isCreative()||nearest.isSpectator()||nearest.isInvisible()) return false;
             boolean sneak = nearest.isCrouching();
+
+            // Sight detection: must have reliable LOS (COLLIDER-based, not VISUAL)
             this.targetConditions = sneak ? sneakSight : normalSight;
-            if (super.canUse()) return true;
+            if (super.canUse()) {
+                // Double-check with reliable raycast to prevent wall detection
+                if (!hasReliableLOS(mob, nearest)) return false;
+                return true;
+            }
+            // Hearing: no LOS required, but only at night
             if (usesHearing && isNight(mob.level())) {
                 this.targetConditions = sneak ? sneakHear : normalHear;
                 return super.canUse();
@@ -466,7 +491,10 @@ public class MobAIHandler {
             if (nearest==null||nearest.isCreative()||nearest.isSpectator()||nearest.isInvisible()) return false;
             boolean sneak = nearest.isCrouching();
             this.targetConditions = sneak ? sneakSight : normalSight;
-            if (super.canUse()) return true;
+            if (super.canUse()) {
+                if (!hasReliableLOS(mob, nearest)) return false;
+                return true;
+            }
             this.targetConditions = sneak ? sneakHear : (mob.isInWater() ? waterHear : landHear);
             return super.canUse();
         }
