@@ -228,7 +228,8 @@ public class MobAIHandler {
         if (gt % 20 == 0) {
             for (var player : sl.players()) {
                 if (player.isCrouching() || player.isCreative() || player.isSpectator()) continue;
-                if (player.getDeltaMovement().horizontalDistanceSqr() < 0.001) continue;
+                // Raise threshold - player must actually be walking (not just physics jitter)
+                if (player.getDeltaMovement().horizontalDistanceSqr() < 0.005) continue;
                 SoundSystem.triggerSound(sl, player.position(), SoundSystem.R_FOOTSTEP, player);
             }
         }
