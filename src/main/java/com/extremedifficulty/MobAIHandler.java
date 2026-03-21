@@ -111,6 +111,9 @@ public class MobAIHandler {
     // -------------------------------------------------------------------------
 
     private void setupZombie(Zombie zombie) {
+        // Remove vanilla targeting goals - replace with our LOS-aware DetectionGoal
+        zombie.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         zombie.goalSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof BreakDoorGoal);
         zombie.goalSelector.addGoal(1, new SmartBreakDoorGoal(zombie));
@@ -125,6 +128,8 @@ public class MobAIHandler {
     }
 
     private void setupZombieLike(Mob mob) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(5, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(6, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, true));
@@ -134,6 +139,8 @@ public class MobAIHandler {
     }
 
     private void setupDrowned(Drowned drowned) {
+        drowned.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         drowned.goalSelector.addGoal(5, new AdvancedSearchGoal(drowned, 1.0));
         drowned.goalSelector.addGoal(6, new MemoryPatrolGoal(drowned));
         drowned.targetSelector.addGoal(3, new DrownedDetectionGoal(drowned));
@@ -143,6 +150,8 @@ public class MobAIHandler {
     }
 
     private void setupArcherSkeleton(AbstractSkeleton mob) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         // FIX: SkeletonCoverGoal at 2 (MOVE only - doesn't block RangedAttack)
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
         // FIX: SafeKeepDistanceGoal at 5 (HIGHER number = LOWER priority)
@@ -155,6 +164,8 @@ public class MobAIHandler {
     }
 
     private void setupMeleeRaider(Mob mob) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(5, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(6, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
@@ -166,6 +177,8 @@ public class MobAIHandler {
     }
 
     private void setupBasic(Mob mob, boolean usesHearing, boolean keepsDistance) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(5, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(6, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, usesHearing));
@@ -175,6 +188,8 @@ public class MobAIHandler {
     }
 
     private void setupRangedRaider(Pillager mob) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
         mob.goalSelector.addGoal(5, new SafeKeepDistanceGoal(mob, 10.0, 16.0));
         mob.goalSelector.addGoal(6, new AdvancedSearchGoal(mob, 1.0));
