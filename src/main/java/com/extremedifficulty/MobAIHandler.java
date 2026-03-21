@@ -398,6 +398,13 @@ public class MobAIHandler {
         return mob.distanceToSqr(player) < r*r;
     }
 
+    // Static version for use in inner Goal classes
+    static boolean canHearPlayerPublic(Mob mob, Player player) {
+        if (player.isCrouching()) return false;
+        double r = player.isSprinting() ? 13.0 : 10.0; // HEAR_NIGHT_NORMAL
+        return mob.distanceToSqr(player) < r*r;
+    }
+
     public static boolean isSoundReactiveMob(net.minecraft.world.entity.Mob mob) {
         return mob instanceof Zombie || mob instanceof Skeleton
             || mob instanceof Spider || mob instanceof CaveSpider
@@ -429,13 +436,12 @@ public class MobAIHandler {
         @Override
         public boolean canUse() {
             if (!super.canUse()) return false;
-            // Check if the hurt-by target is a player we can actually see
             LivingEntity attacker = mob.getLastHurtByMob();
             if (attacker instanceof Player player) {
                 if (hasReliableLOS(mob, player)) {
-                    return true; // Can see attacker - full aggro
+                    return true;
                 }
-                // Can't see attacker - send to investigate instead
+                // No LOS - investigate instead of full aggro
                 var tag = mob.getPersistentData();
                 tag.putDouble(NBT_LAST_X, player.getX());
                 tag.putDouble(NBT_LAST_Y, player.getY());
@@ -444,11 +450,22 @@ public class MobAIHandler {
                 tag.putDouble(NBT_ANCHOR_Z, player.getZ());
                 tag.putInt(NBT_SEARCH_STATE, 1);
                 tag.putInt(NBT_SEARCH_TICKS, 0);
-                // Clear the hurt-by so this goal doesn't loop
                 mob.setLastHurtByMob(null);
                 return false;
             }
-            return true; // Non-player attacker - vanilla behaviour
+            return true;
+        }
+
+        @Override
+        public boolean canContinueToUse() {
+            // If target is a player and we lost LOS - stop goal
+            // updateSearchState will handle cleanup
+            if (mob.getTarget() instanceof Player player) {
+                if (!hasReliableLOS(mob, player) && !canHearPlayerPublic(mob, player)) {
+                    return false;
+                }
+            }
+            return super.canContinueToUse();
         }
     }
 
