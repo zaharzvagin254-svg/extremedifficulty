@@ -258,7 +258,7 @@ public class MobAIHandler {
 
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
-                if (mob.hasLineOfSight(player)) {
+                if (hasReliableLOS(mob, player)) {
                     tag.putDouble(NBT_LAST_X, player.getX());
                     tag.putDouble(NBT_LAST_Y, player.getY());
                     tag.putDouble(NBT_LAST_Z, player.getZ());
@@ -266,7 +266,6 @@ public class MobAIHandler {
                     tag.putInt(NBT_SEARCH_TICKS, 0);
                     tag.putByte(NBT_SAW_DOOR, (byte) 0);
                 } else {
-                    // Lost LOS - check if player went through a door
                     if (mob instanceof Zombie && tag.contains(NBT_LAST_X)) {
                         if (isDoorNearLastPos(level, tag))
                             tag.putByte(NBT_SAW_DOOR, (byte) 1);
@@ -276,7 +275,6 @@ public class MobAIHandler {
                         if (tag.contains(NBT_LAST_X)) {
                             tag.putInt(NBT_SEARCH_STATE, 1);
                             tag.putInt(NBT_SEARCH_TICKS, 0);
-                            // Set patrol anchor to last known position
                             if (!tag.contains(NBT_ANCHOR_X)) {
                                 tag.putDouble(NBT_ANCHOR_X, tag.getDouble(NBT_LAST_X));
                                 tag.putDouble(NBT_ANCHOR_Z, tag.getDouble(NBT_LAST_Z));
@@ -300,10 +298,11 @@ public class MobAIHandler {
             clearSearch(tag); return;
         }
 
+        // During patrol: only aggro if we have RELIABLE LOS (COLLIDER-based)
         if (tag.contains(NBT_LAST_X)) {
             Player nearby = level.getNearestPlayer(mob, 18.0);
             if (nearby != null && !nearby.isCreative() && !nearby.isSpectator()
-             && mob.hasLineOfSight(nearby)) {
+             && hasReliableLOS(mob, nearby)) {
                 mob.setTarget(nearby); clearSearch(tag);
             }
         }
@@ -312,7 +311,7 @@ public class MobAIHandler {
     private void updateFlankData(Mob mob, long gt) {
         if (!(mob instanceof Zombie) || mob instanceof ZombifiedPiglin) return;
         if (!(mob.getTarget() instanceof Player player)) return;
-        if (!mob.hasLineOfSight(player)) return;
+        if (!hasReliableLOS(mob, player)) return;
         double dx = player.getX()-mob.getX(), dz = player.getZ()-mob.getZ();
         double len = Math.sqrt(dx*dx+dz*dz);
         if (len < 1.0) return;
@@ -342,6 +341,21 @@ public class MobAIHandler {
                     instanceof net.minecraft.world.level.block.DoorBlock) return true;
         }
         return false;
+    }
+
+    /**
+     * Reliable LOS using COLLIDER clip - won't pass through solid blocks.
+     * Vanilla hasLineOfSight() uses VISUAL which can pass through some blocks.
+     */
+    static boolean hasReliableLOS(Mob mob, LivingEntity target) {
+        var clip = mob.level().clip(new net.minecraft.world.level.ClipContext(
+            mob.getEyePosition(),
+            target.getEyePosition(),
+            net.minecraft.world.level.ClipContext.Block.COLLIDER,
+            net.minecraft.world.level.ClipContext.Fluid.NONE,
+            mob
+        ));
+        return clip.getType() == net.minecraft.world.phys.HitResult.Type.MISS;
     }
 
     static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
