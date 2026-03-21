@@ -135,8 +135,9 @@ public class SoundSystem {
     @SubscribeEvent
     public void onExplosion(ExplosionEvent.Detonate event) {
         if (!(event.getLevel() instanceof ServerLevel sl)) return;
+        // Explosion is LOUD - fully redirects patrol
         triggerSound(sl, event.getExplosion().getPosition(),
-            R_EXPLOSION, event.getExplosion().getIndirectSourceEntity());
+            R_EXPLOSION, event.getExplosion().getIndirectSourceEntity(), true);
     }
 
     // -------------------------------------------------------------------------
@@ -149,6 +150,13 @@ public class SoundSystem {
     // -------------------------------------------------------------------------
     public static void triggerSound(ServerLevel level, Vec3 soundPos,
                                      double baseRadius, Entity source) {
+        triggerSound(level, soundPos, baseRadius, source, false);
+    }
+
+    // loud=true: explosion/bell - fully redirects patrol to sound position
+    // loud=false: quiet sound - only nudges patrol anchor slightly
+    public static void triggerSound(ServerLevel level, Vec3 soundPos,
+                                     double baseRadius, Entity source, boolean loud) {
         level.getEntitiesOfClass(
             net.minecraft.world.entity.Mob.class,
             new AABB(
@@ -157,6 +165,7 @@ public class SoundSystem {
             mob -> {
                 if (mob instanceof Creeper) return false;
                 if (!MobAIHandler.isSoundReactiveMob(mob)) return false;
+                // Mobs actively chasing ignore quiet sounds but react to loud ones
                 if (mob.getTarget() != null) return false;
                 return true;
             }
@@ -164,21 +173,53 @@ public class SoundSystem {
             double distSq = mob.distanceToSqr(soundPos.x, soundPos.y, soundPos.z);
             if (distSq > baseRadius * baseRadius) return;
 
-            // Apply occlusion
             double effectiveRadius = distSq < 9.0
                 ? baseRadius
                 : computeOcclusion(level, soundPos, mob.getEyePosition(), baseRadius);
-
             if (distSq > effectiveRadius * effectiveRadius) return;
 
-            // FIX: NEVER setTarget from sound - always just send mob to investigate.
-            // mob will aggro naturally when DetectionGoal (with LOS check) fires.
             var tag = mob.getPersistentData();
-            tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
-            tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
-            tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
-            tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
-            tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
+            int state = tag.getInt(MobAIHandler.NBT_SEARCH_STATE);
+
+            if (state > 0 && tag.contains(MobAIHandler.NBT_LAST_X)) {
+                // Mob is already patrolling
+                if (loud) {
+                    // LOUD: fully redirect patrol to sound position
+                    tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
+                    tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
+                    tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
+                    // Reset anchor to new position
+                    tag.putDouble(MobAIHandler.NBT_ANCHOR_X, soundPos.x);
+                    tag.putDouble(MobAIHandler.NBT_ANCHOR_Z, soundPos.z);
+                    tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
+                    tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
+                } else {
+                    // QUIET: nudge anchor slightly toward sound (max 8 blocks shift)
+                    double ax = tag.getDouble(MobAIHandler.NBT_ANCHOR_X);
+                    double az = tag.getDouble(MobAIHandler.NBT_ANCHOR_Z);
+                    double dx = soundPos.x - ax;
+                    double dz = soundPos.z - az;
+                    double dist = Math.sqrt(dx*dx + dz*dz);
+                    if (dist > 0.1) {
+                        // Shift anchor by up to 4 blocks toward sound
+                        double shift = Math.min(dist * 0.3, 4.0);
+                        double nx = ax + (dx/dist) * shift;
+                        double nz = az + (dz/dist) * shift;
+                        tag.putDouble(MobAIHandler.NBT_ANCHOR_X, nx);
+                        tag.putDouble(MobAIHandler.NBT_ANCHOR_Z, nz);
+                        // Don't reset state - keep patrolling, just shifted
+                    }
+                }
+            } else if (state == 0) {
+                // Mob is idle - start investigating sound position
+                tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
+                tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
+                tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
+                tag.putDouble(MobAIHandler.NBT_ANCHOR_X, soundPos.x);
+                tag.putDouble(MobAIHandler.NBT_ANCHOR_Z, soundPos.z);
+                tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
+                tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
+            }
         });
     }
 
