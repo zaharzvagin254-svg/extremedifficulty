@@ -48,8 +48,9 @@ public class MobAIHandler {
     private static final double DETECT_RANGE_SNEAK  = 10.0;
     private static final double FOLLOW_RANGE_NIGHT  = 48.0;
     private static final double FOLLOW_RANGE_DAY    = 32.0;
-    private static final int    SEARCH_ACTIVE_BASE  = 1200;
-    private static final int    SEARCH_PASSIVE_BASE = 1200;
+    private static final int    SEARCH_ACTIVE_BASE  = 1000; // ~50 sec base
+    private static final int    SEARCH_PASSIVE_BASE = 1000; // ~50 sec base
+    // With variance 0.8-1.2: total = 1.33-2.0 min per mob
     private static final double HEAR_NORMAL = 10.0;
     private static final double HEAR_SNEAK  = 4.0;
     private static final double DROWNED_HEAR_LAND  = 5.0;
@@ -352,8 +353,13 @@ public class MobAIHandler {
     }
 
     static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
-        tag.putInt(NBT_SEARCH_STATE, 0); tag.putInt(NBT_SEARCH_TICKS, 0);
-        tag.remove(NBT_LAST_X); tag.remove(NBT_LAST_Y); tag.remove(NBT_LAST_Z);
+        tag.putInt(NBT_SEARCH_STATE, 0);
+        tag.putInt(NBT_SEARCH_TICKS, 0);
+        tag.remove(NBT_LAST_X);
+        tag.remove(NBT_LAST_Y);
+        tag.remove(NBT_LAST_Z);
+        // Goal will stop automatically since canUse/canContinueToUse check LAST_X
+        // Vanilla wander/random stroll goals will take over naturally
     }
 
     private boolean canHearPlayer(Mob mob, Player player) {
