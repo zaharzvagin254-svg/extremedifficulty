@@ -278,26 +278,23 @@ public class MobAIHandler {
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
                 if (mob.hasLineOfSight(player)) {
-                    // Has LOS - update last known pos, keep target
                     tag.putDouble(NBT_LAST_X, player.getX());
                     tag.putDouble(NBT_LAST_Y, player.getY());
                     tag.putDouble(NBT_LAST_Z, player.getZ());
                     tag.putInt(NBT_SEARCH_STATE, 0);
                     tag.putInt(NBT_SEARCH_TICKS, 0);
                 } else {
-                    // No LOS - check hearing
-                    // FIX: if player is NOT sneaking and close enough to hear - keep target
-                    // This prevents the "zombie ignores standing player" bug
+                    // No LOS - but if player is very close (< 6 blocks) keep chasing
+                    // Fixes: losing target through glass at short range while sneaking
+                    if (mob.distanceToSqr(player) < 36.0) return;
                     boolean canHear = canHearPlayer(mob, player);
                     if (!canHear) {
-                        // Lost both LOS and hearing - enter search state
                         mob.setTarget(null);
                         if (tag.contains(NBT_LAST_X)) {
                             tag.putInt(NBT_SEARCH_STATE, 1);
                             tag.putInt(NBT_SEARCH_TICKS, 0);
                         }
                     }
-                    // else: can hear but no LOS - keep target, don't update last pos
                 }
             }
             return;
