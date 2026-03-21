@@ -157,7 +157,7 @@ public class MobAIHandler {
         setupRanges(drowned);
     }
 
-    private void addArcherGoals(Mob mob) {
+    private void addArcherGoals(net.minecraft.world.entity.PathfinderMob mob) {
         mob.targetSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof HurtByTargetGoal);
         mob.targetSelector.addGoal(1, new LosHurtByTargetGoal(mob));
@@ -172,7 +172,7 @@ public class MobAIHandler {
         setupRanges(mob);
     }
 
-    private void addBasicGoals(Mob mob, boolean keepsDistance) {
+    private void addBasicGoals(net.minecraft.world.entity.PathfinderMob mob, boolean keepsDistance) {
         mob.targetSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof HurtByTargetGoal);
         mob.targetSelector.addGoal(1, new LosHurtByTargetGoal(mob));
@@ -429,7 +429,7 @@ public class MobAIHandler {
      * This prevents infinite wall-targeting after being hit.
      */
     static class LosHurtByTargetGoal extends HurtByTargetGoal {
-        public LosHurtByTargetGoal(Mob mob) {
+        public LosHurtByTargetGoal(net.minecraft.world.entity.PathfinderMob mob) {
             super(mob);
         }
 
