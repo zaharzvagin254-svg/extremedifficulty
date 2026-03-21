@@ -5,6 +5,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.goal.*;
+import net.minecraft.world.entity.ai.goal.target.HurtByTargetGoal;
 import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
 import net.minecraft.world.entity.monster.*;
 import net.minecraft.world.entity.npc.Villager;
@@ -113,7 +114,11 @@ public class MobAIHandler {
     }
 
     private void addZombieGoals(Zombie mob, boolean breakDoors) {
-        // Remove vanilla targeting - replace with ours (fixed 18 block detection)
+        // Replace vanilla HurtByTargetGoal with our LOS-aware version
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof HurtByTargetGoal);
+        mob.targetSelector.addGoal(1, new LosHurtByTargetGoal(mob));
+        // Remove vanilla player targeting - replace with ours
         mob.targetSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         if (breakDoors) {
@@ -137,6 +142,9 @@ public class MobAIHandler {
 
     private void addDrownedGoals(Drowned drowned) {
         drowned.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof HurtByTargetGoal);
+        drowned.targetSelector.addGoal(1, new LosHurtByTargetGoal(drowned));
+        drowned.targetSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         drowned.goalSelector.addGoal(4, new AdvancedSearchGoal(drowned, 1.0));
         drowned.goalSelector.addGoal(5, new MemoryPatrolGoal(drowned));
@@ -151,6 +159,9 @@ public class MobAIHandler {
 
     private void addArcherGoals(Mob mob) {
         mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof HurtByTargetGoal);
+        mob.targetSelector.addGoal(1, new LosHurtByTargetGoal(mob));
+        mob.targetSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
         mob.goalSelector.addGoal(3, new SafeKeepDistanceGoal(mob, 6.0, 14.0));
@@ -162,6 +173,9 @@ public class MobAIHandler {
     }
 
     private void addBasicGoals(Mob mob, boolean keepsDistance) {
+        mob.targetSelector.getAvailableGoals().removeIf(
+            w -> w.getGoal() instanceof HurtByTargetGoal);
+        mob.targetSelector.addGoal(1, new LosHurtByTargetGoal(mob));
         mob.targetSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof NearestAttackableTargetGoal);
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
@@ -400,6 +414,43 @@ public class MobAIHandler {
     // =========================================================================
     // GOALS
     // =========================================================================
+
+    /**
+     * Replaces vanilla HurtByTargetGoal.
+     * When mob is hit by player - only aggros if it has LOS to attacker.
+     * If no LOS - goes to investigate position instead of full aggro.
+     * This prevents infinite wall-targeting after being hit.
+     */
+    static class LosHurtByTargetGoal extends HurtByTargetGoal {
+        public LosHurtByTargetGoal(Mob mob) {
+            super(mob);
+        }
+
+        @Override
+        public boolean canUse() {
+            if (!super.canUse()) return false;
+            // Check if the hurt-by target is a player we can actually see
+            LivingEntity attacker = mob.getLastHurtByMob();
+            if (attacker instanceof Player player) {
+                if (hasReliableLOS(mob, player)) {
+                    return true; // Can see attacker - full aggro
+                }
+                // Can't see attacker - send to investigate instead
+                var tag = mob.getPersistentData();
+                tag.putDouble(NBT_LAST_X, player.getX());
+                tag.putDouble(NBT_LAST_Y, player.getY());
+                tag.putDouble(NBT_LAST_Z, player.getZ());
+                tag.putDouble(NBT_ANCHOR_X, player.getX());
+                tag.putDouble(NBT_ANCHOR_Z, player.getZ());
+                tag.putInt(NBT_SEARCH_STATE, 1);
+                tag.putInt(NBT_SEARCH_TICKS, 0);
+                // Clear the hurt-by so this goal doesn't loop
+                mob.setLastHurtByMob(null);
+                return false;
+            }
+            return true; // Non-player attacker - vanilla behaviour
+        }
+    }
 
     /**
      * DetectionGoal: replaces vanilla NearestAttackableTargetGoal<Player>.
