@@ -200,7 +200,20 @@ public class MobAIHandler {
         int count = 0;
         for (Zombie z : nearby) {
             if (count++ >= 6) break;
-            z.setTarget(player);
+            if (hasReliableLOS(z, player)) {
+                // Can see player directly - full aggro
+                z.setTarget(player);
+            } else {
+                // Can't see player - go investigate the sound of combat
+                var tag = z.getPersistentData();
+                tag.putDouble(NBT_LAST_X, player.getX());
+                tag.putDouble(NBT_LAST_Y, player.getY());
+                tag.putDouble(NBT_LAST_Z, player.getZ());
+                tag.putDouble(NBT_ANCHOR_X, player.getX());
+                tag.putDouble(NBT_ANCHOR_Z, player.getZ());
+                tag.putInt(NBT_SEARCH_STATE, 1);
+                tag.putInt(NBT_SEARCH_TICKS, 0);
+            }
         }
     }
 
