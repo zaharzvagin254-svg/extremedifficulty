@@ -44,14 +44,10 @@ public class SoundSystem {
     public static final double R_EXPLOSION    = 50.0;
     public static final double R_BELL         = 50.0;
 
-    // Per solid face reduction (direct path)
-    private static final double FACE_BLOCK    = 0.55;
-    // Diffraction penalty when going around a corner (partial open path)
-    private static final double DIFFRACTION   = 0.75;
-    // Max faces before sound is negligible
-    private static final int    MAX_FACES     = 8;
+    private static final double FACE_BLOCK  = 0.55;
+    private static final double DIFFRACTION = 0.75;
+    private static final int    MAX_FACES   = 8;
 
-    // Arrow / trident IMPACT only
     @SubscribeEvent
     public void onProjectileImpact(ProjectileImpactEvent event) {
         Entity proj = event.getEntity();
@@ -144,9 +140,13 @@ public class SoundSystem {
     }
 
     // -------------------------------------------------------------------------
-    // CORE with improved 3D occlusion
+    // CORE
+    // Sound NEVER sets mob target directly.
+    // It only tells the mob WHERE to investigate (NBT search coords).
+    // DetectionGoal (which has LOS check) will set the actual target
+    // when the mob arrives and sees the player.
+    // This prevents attacking through walls.
     // -------------------------------------------------------------------------
-
     public static void triggerSound(ServerLevel level, Vec3 soundPos,
                                      double baseRadius, Entity source) {
         level.getEntitiesOfClass(
@@ -164,125 +164,70 @@ public class SoundSystem {
             double distSq = mob.distanceToSqr(soundPos.x, soundPos.y, soundPos.z);
             if (distSq > baseRadius * baseRadius) return;
 
-            // Very close - skip occlusion
+            // Apply occlusion
             double effectiveRadius = distSq < 9.0
                 ? baseRadius
                 : computeOcclusion(level, soundPos, mob.getEyePosition(), baseRadius);
 
             if (distSq > effectiveRadius * effectiveRadius) return;
 
-            if (source instanceof Player p && !p.isCreative() && !p.isSpectator()) {
-                // FIX: only target player if mob has LOS to them
-                // Sound goes through walls but targeting requires visibility
-                // Exception: if sound source is very close (< 4 blocks) - mob reacts regardless
-                double dSq = mob.distanceToSqr(soundPos.x, soundPos.y, soundPos.z);
-                if (dSq < 16.0 || mob.hasLineOfSight(p)) {
-                    mob.setTarget(p);
-                } else {
-                    // Heard sound but can't see - go investigate the sound position
-                    var tag = mob.getPersistentData();
-                    tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
-                    tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
-                    tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
-                    tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
-                    tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
-                }
-            } else {
-                var tag = mob.getPersistentData();
-                tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
-                tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
-                tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
-                tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
-                tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
-            }
+            // FIX: NEVER setTarget from sound - always just send mob to investigate.
+            // mob will aggro naturally when DetectionGoal (with LOS check) fires.
+            var tag = mob.getPersistentData();
+            tag.putDouble(MobAIHandler.NBT_LAST_X, soundPos.x);
+            tag.putDouble(MobAIHandler.NBT_LAST_Y, soundPos.y);
+            tag.putDouble(MobAIHandler.NBT_LAST_Z, soundPos.z);
+            tag.putInt(MobAIHandler.NBT_SEARCH_STATE, 1);
+            tag.putInt(MobAIHandler.NBT_SEARCH_TICKS, 0);
         });
     }
 
-    /**
-     * Improved 3D occlusion with diffraction.
-     *
-     * The key insight: sound travels around obstacles in real life.
-     * If there's a solid wall but an open path around it, sound diffuses
-     * around the corner with moderate attenuation.
-     *
-     * Algorithm:
-     * 1. Check direct ray - count solid faces on path
-     * 2. If direct path is blocked, try to find partial open path
-     *    by sampling offset rays (above, left, right of direct path)
-     * 3. Best path (least blocked) determines effective radius
-     * 4. Partial open path adds diffraction penalty
-     */
-    private static double computeOcclusion(ServerLevel level, Vec3 from, Vec3 to, double baseRadius) {
-        // Try direct path first
+    // -------------------------------------------------------------------------
+    // 3D Occlusion with diffraction
+    // -------------------------------------------------------------------------
+    private static double computeOcclusion(ServerLevel level, Vec3 from,
+                                            Vec3 to, double baseRadius) {
         int directBlocks = countBlockedFaces(level, from, to);
-        if (directBlocks == 0) return baseRadius; // clear - full radius
+        if (directBlocks == 0) return baseRadius;
 
-        // Direct path is blocked - try offset paths to simulate diffraction
-        // Sample 4 offset directions: up, left, right, up-left diagonal
+        // Build perpendiculars for offset paths
         Vec3 dir = to.subtract(from).normalize();
-
-        // Build perpendicular vectors for offsets
-        Vec3 up     = new Vec3(0, 1, 0);
-        Vec3 right  = dir.cross(up).normalize();
-        // If dir is nearly vertical, use different reference
-        if (right.lengthSqr() < 0.01) {
+        Vec3 up    = new Vec3(0, 1, 0);
+        Vec3 right = dir.cross(up).normalize();
+        if (right.lengthSqr() < 0.01)
             right = dir.cross(new Vec3(1, 0, 0)).normalize();
-        }
         Vec3 upPerp = right.cross(dir).normalize();
-
-        double dist = from.distanceTo(to);
-        double offsets[] = {2.0, 1.5}; // how far to offset the midpoint
 
         int bestBlocks = directBlocks;
 
-        for (double offset : offsets) {
-            // Mid-point of the path offset in different directions
+        for (double offset : new double[]{2.0, 1.5}) {
             Vec3 mid = from.add(to).scale(0.5);
-
-            Vec3[] midPoints = {
-                mid.add(upPerp.scale(offset)),     // above
-                mid.add(right.scale(offset)),      // right
-                mid.add(right.scale(-offset)),     // left
-                mid.add(upPerp.scale(offset * 0.7)).add(right.scale(offset * 0.7)), // diagonal
+            Vec3[] mids = {
+                mid.add(upPerp.scale(offset)),
+                mid.add(right.scale(offset)),
+                mid.add(right.scale(-offset)),
+                mid.add(upPerp.scale(offset * 0.7)).add(right.scale(offset * 0.7)),
             };
-
-            for (Vec3 midPt : midPoints) {
-                // Two-segment path: from -> midPt -> to
-                int seg1 = countBlockedFaces(level, from, midPt);
-                int seg2 = countBlockedFaces(level, midPt, to);
-                int total = seg1 + seg2;
-                if (total < bestBlocks) {
-                    bestBlocks = total;
-                }
+            for (Vec3 mp : mids) {
+                int total = countBlockedFaces(level, from, mp)
+                          + countBlockedFaces(level, mp, to);
+                if (total < bestBlocks) bestBlocks = total;
             }
         }
 
-        if (bestBlocks == 0) {
-            // Found clear around-corner path - apply diffraction penalty
-            return baseRadius * DIFFRACTION;
-        }
+        if (bestBlocks == 0)        return baseRadius * DIFFRACTION;
+        if (bestBlocks >= MAX_FACES) return baseRadius * 0.03;
 
         if (bestBlocks < directBlocks) {
-            // Found partial open path - combine direct and around-corner
-            // Less blocked than direct but still attenuated
-            double directFactor = Math.pow(FACE_BLOCK, directBlocks);
-            double aroundFactor = Math.pow(FACE_BLOCK, bestBlocks) * DIFFRACTION;
-            // Use best path factor
-            double factor = Math.max(directFactor, aroundFactor);
-            return baseRadius * factor;
+            double df = Math.pow(FACE_BLOCK, directBlocks);
+            double af = Math.pow(FACE_BLOCK, bestBlocks) * DIFFRACTION;
+            return baseRadius * Math.max(df, af);
         }
 
-        // Fully enclosed - just use direct path factor
-        if (bestBlocks >= MAX_FACES) return baseRadius * 0.03;
-        return baseRadius * Math.pow(FACE_BLOCK, bestBlocks);
+        return baseRadius * Math.pow(FACE_BLOCK, directBlocks);
     }
 
-    /**
-     * Count solid block faces along a ray path.
-     * Returns 0 if path is clear, higher = more occluded.
-     */
     private static int countBlockedFaces(ServerLevel level, Vec3 from, Vec3 to) {
-        // Quick LOS check
         var clip = level.clip(new ClipContext(
             from, to, ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, null));
         if (clip.getType() == HitResult.Type.MISS) return 0;
@@ -290,7 +235,6 @@ public class SoundSystem {
         Vec3 dir = to.subtract(from);
         double dist = dir.length();
         if (dist < 0.01) return 0;
-
         Vec3 step = dir.normalize().scale(0.5);
         int solid = 0;
         BlockPos last = null;
@@ -300,10 +244,7 @@ public class SoundSystem {
             BlockPos bp = BlockPos.containing(from.add(step.scale(i)));
             if (bp.equals(last)) continue;
             last = bp;
-            BlockState bs = level.getBlockState(bp);
-            // Check if this block is solid AND transparent check
-            // Glass is NOT solid render -> won't block sound
-            if (bs.isSolidRender(level, bp)) solid++;
+            if (level.getBlockState(bp).isSolidRender(level, bp)) solid++;
         }
         return solid;
     }
