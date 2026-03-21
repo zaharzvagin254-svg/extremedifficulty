@@ -50,8 +50,7 @@ public class ExtremeDifficulty {
     private static final double BOSS_DAMAGE_MULT = 1.40;
     private static final double BRUTE_DMG_MULT   = 1.10;
 
-    private static final double DAY_AGGRO_RANGE   = 32.0;
-    private static final double NIGHT_AGGRO_RANGE = 48.0;
+    private static final double AGGRO_RANGE = 48.0; // follow range (chase distance)
 
     public ExtremeDifficulty() {
         IEventBus modBus = FMLJavaModLoadingContext.get().getModEventBus();
@@ -224,7 +223,7 @@ public class ExtremeDifficulty {
     private static void applyAggroRange(LivingEntity living, boolean night) {
         if (!(living instanceof Mob mob)) return;
         AttributeInstance attr = mob.getAttribute(Attributes.FOLLOW_RANGE);
-        if (attr != null) attr.setBaseValue(night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE);
+        if (attr != null) attr.setBaseValue(AGGRO_RANGE);
     }
 
     private static double baseHp(LivingEntity living) {
