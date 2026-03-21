@@ -36,6 +36,9 @@ public class MobAIHandler {
     public static final String NBT_LAST_Y          = "ed_ly";
     public static final String NBT_LAST_Z          = "ed_lz";
     public static final String NBT_SEARCH_DURATION = "ed_sdur";
+    // Patrol anchor - the base point mobs patrol around (can shift with sounds)
+    public static final String NBT_ANCHOR_X        = "ed_ax";
+    public static final String NBT_ANCHOR_Z        = "ed_az";
 
     private static final String NBT_FLEE_DX    = "ed_fdx";
     private static final String NBT_FLEE_DZ    = "ed_fdz";
@@ -273,6 +276,11 @@ public class MobAIHandler {
                         if (tag.contains(NBT_LAST_X)) {
                             tag.putInt(NBT_SEARCH_STATE, 1);
                             tag.putInt(NBT_SEARCH_TICKS, 0);
+                            // Set patrol anchor to last known position
+                            if (!tag.contains(NBT_ANCHOR_X)) {
+                                tag.putDouble(NBT_ANCHOR_X, tag.getDouble(NBT_LAST_X));
+                                tag.putDouble(NBT_ANCHOR_Z, tag.getDouble(NBT_LAST_Z));
+                            }
                         }
                     }
                 }
@@ -339,6 +347,7 @@ public class MobAIHandler {
     static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
         tag.putInt(NBT_SEARCH_STATE,0); tag.putInt(NBT_SEARCH_TICKS,0);
         tag.remove(NBT_LAST_X); tag.remove(NBT_LAST_Y); tag.remove(NBT_LAST_Z);
+        tag.remove(NBT_ANCHOR_X); tag.remove(NBT_ANCHOR_Z);
         tag.putByte(NBT_SAW_DOOR,(byte)0);
     }
 
@@ -525,35 +534,132 @@ public class MobAIHandler {
 
     static class AdvancedSearchGoal extends Goal {
         private final Mob mob; private final double speed;
-        private BlockPos target=null; private int lt=0,st=0;
-        private double lx=Double.MIN_VALUE,lz; private static final int STUCK=60;
-        public AdvancedSearchGoal(Mob mob,double speed){this.mob=mob;this.speed=speed;setFlags(EnumSet.of(Flag.MOVE));}
-        @Override public boolean canUse(){if(mob.getTarget()!=null)return false;var t=mob.getPersistentData();return t.getInt(NBT_SEARCH_STATE)>0&&t.contains(NBT_LAST_X);}
-        @Override public boolean canContinueToUse(){if(mob.getTarget()!=null)return false;var t=mob.getPersistentData();return t.getInt(NBT_SEARCH_STATE)>0&&t.contains(NBT_LAST_X);}
-        @Override public void start(){lt=0;st=0;lx=mob.getX();lz=mob.getZ();mob.setAggressive(false);pick();}
-        @Override public void tick(){
-            lt++;mob.setAggressive(false);
-            if(lt%10==0){double dx=mob.getX()-lx,dz=mob.getZ()-lz;
-                if(dx*dx+dz*dz<0.01)st+=10;else{st=0;lx=mob.getX();lz=mob.getZ();}
-                if(st>=STUCK){st=0;if(lt>200){clearSearch(mob.getPersistentData());return;}pick();return;}}
-            int state=mob.getPersistentData().getInt(NBT_SEARCH_STATE);
-            if(target==null||mob.blockPosition().closerThan(target,2.0)||lt%80==0)pick();
-            if(target!=null)mob.getNavigation().moveTo(target.getX()+0.5,target.getY(),target.getZ()+0.5,state==1?speed*0.7:speed*0.5);
+        private BlockPos target = null;
+        private int lt = 0, st = 0, loiterTicks = 0;
+        private double lx = Double.MIN_VALUE, lz;
+        private static final int STUCK = 60;
+        private static final int LOITER_MIN = 40;  // 2 sec min loiter
+        private static final int LOITER_MAX = 100; // 5 sec max loiter
+
+        public AdvancedSearchGoal(Mob mob, double speed) {
+            this.mob = mob; this.speed = speed;
+            setFlags(EnumSet.of(Flag.MOVE));
         }
-        private void pick(){
-            var tag=mob.getPersistentData();if(!tag.contains(NBT_LAST_X)){target=null;return;}
-            double lxp=tag.getDouble(NBT_LAST_X),lzp=tag.getDouble(NBT_LAST_Z);
-            int state=tag.getInt(NBT_SEARCH_STATE);double r=state==1?5.0:10.0;
-            for(int a=0;a<2;a++){
-                double ang=mob.getRandom().nextDouble()*Math.PI*2,d=r*(0.4+mob.getRandom().nextDouble()*0.6);
-                int nx=(int)(lxp+Math.cos(ang)*d),nz=(int)(lzp+Math.sin(ang)*d);
-                int ny=mob.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,nx,nz);
-                if(ny<=0||Math.abs(ny-mob.getBlockY())>5)continue;
-                BlockPos c=new BlockPos(nx,ny,nz);var path=mob.getNavigation().createPath(c,1);
-                if(path!=null&&path.canReach()){target=c;return;}}
-            target=null;
+
+        @Override public boolean canUse() {
+            if (mob.getTarget() != null) return false;
+            var t = mob.getPersistentData();
+            return t.getInt(NBT_SEARCH_STATE) > 0 && t.contains(NBT_LAST_X);
         }
-        @Override public void stop(){mob.getNavigation().stop();mob.setAggressive(false);target=null;lt=0;st=0;lx=Double.MIN_VALUE;}
+
+        @Override public boolean canContinueToUse() {
+            if (mob.getTarget() != null) return false;
+            var t = mob.getPersistentData();
+            return t.getInt(NBT_SEARCH_STATE) > 0 && t.contains(NBT_LAST_X);
+        }
+
+        @Override public void start() {
+            lt = 0; st = 0; loiterTicks = 0;
+            lx = mob.getX(); lz = mob.getZ();
+            mob.setAggressive(false);
+            pick();
+        }
+
+        @Override public void tick() {
+            lt++; mob.setAggressive(false);
+
+            // Stuck detection
+            if (lt % 10 == 0) {
+                double dx = mob.getX()-lx, dz = mob.getZ()-lz;
+                if (dx*dx+dz*dz < 0.01) st += 10;
+                else { st = 0; lx = mob.getX(); lz = mob.getZ(); }
+                if (st >= STUCK) {
+                    st = 0;
+                    if (lt > 200) { clearSearch(mob.getPersistentData()); return; }
+                    pick(); return;
+                }
+            }
+
+            int state = mob.getPersistentData().getInt(NBT_SEARCH_STATE);
+
+            // Loiter: occasionally stop and "look around" before moving again
+            if (loiterTicks > 0) {
+                loiterTicks--;
+                mob.getNavigation().stop();
+                return;
+            }
+
+            // Re-pick target when arrived or periodically
+            if (target == null || mob.blockPosition().closerThan(target, 2.0)) {
+                // Arrived - loiter for a bit before picking next point
+                loiterTicks = LOITER_MIN + mob.getRandom().nextInt(LOITER_MAX - LOITER_MIN);
+                pick();
+                return;
+            }
+            // Also re-pick occasionally to react to anchor shifts from sounds
+            if (lt % 100 == 0) pick();
+
+            if (target != null) {
+                double spd = state == 1 ? speed * 0.7 : speed * 0.5;
+                mob.getNavigation().moveTo(
+                    target.getX()+0.5, target.getY(), target.getZ()+0.5, spd);
+            }
+        }
+
+        private void pick() {
+            var tag = mob.getPersistentData();
+            if (!tag.contains(NBT_LAST_X)) { target = null; return; }
+
+            // Use anchor if available, otherwise use LAST_X
+            double cx = tag.contains(NBT_ANCHOR_X)
+                ? tag.getDouble(NBT_ANCHOR_X) : tag.getDouble(NBT_LAST_X);
+            double cz = tag.contains(NBT_ANCHOR_Z)
+                ? tag.getDouble(NBT_ANCHOR_Z) : tag.getDouble(NBT_LAST_Z);
+
+            int state = tag.getInt(NBT_SEARCH_STATE);
+            double r = state == 1 ? 6.0 : 12.0;
+
+            // 20% chance: go opposite side of anchor (simulates circling a building)
+            boolean opposite = mob.getRandom().nextFloat() < 0.2f;
+            if (opposite) {
+                // Pick a point on the far side of the anchor from mob's current position
+                double toAnchorX = cx - mob.getX();
+                double toAnchorZ = cz - mob.getZ();
+                double len = Math.sqrt(toAnchorX*toAnchorX + toAnchorZ*toAnchorZ);
+                if (len > 0.5) {
+                    double nx = (int)(cx + (toAnchorX/len) * r);
+                    double nz = (int)(cz + (toAnchorZ/len) * r);
+                    int ny = mob.level().getHeight(
+                        Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, (int)nx, (int)nz);
+                    if (ny > 0 && Math.abs(ny - mob.getBlockY()) <= 5) {
+                        BlockPos c = new BlockPos((int)nx, ny, (int)nz);
+                        var path = mob.getNavigation().createPath(c, 1);
+                        if (path != null && path.canReach()) { target = c; return; }
+                    }
+                }
+            }
+
+            // Normal: random point within radius of anchor
+            for (int a = 0; a < 3; a++) {
+                double ang = mob.getRandom().nextDouble() * Math.PI * 2;
+                double d   = r * (0.3 + mob.getRandom().nextDouble() * 0.7);
+                int nx = (int)(cx + Math.cos(ang) * d);
+                int nz = (int)(cz + Math.sin(ang) * d);
+                int ny = mob.level().getHeight(
+                    Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, nx, nz);
+                if (ny <= 0 || Math.abs(ny - mob.getBlockY()) > 5) continue;
+                BlockPos c = new BlockPos(nx, ny, nz);
+                var path = mob.getNavigation().createPath(c, 1);
+                if (path != null && path.canReach()) { target = c; return; }
+            }
+            target = null;
+        }
+
+        @Override public void stop() {
+            mob.getNavigation().stop(); mob.setAggressive(false);
+            target = null; lt = 0; st = 0; loiterTicks = 0;
+            lx = Double.MIN_VALUE;
+        }
     }
 
     static class MemoryPatrolGoal extends Goal {
