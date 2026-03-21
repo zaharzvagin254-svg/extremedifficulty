@@ -49,8 +49,6 @@ public class MobAIHandler {
     private static final double HEAR_NIGHT_NORMAL = 10.0;
     private static final double HEAR_NIGHT_SNEAK  = 4.0;
 
-    private static final double FOLLOW_RANGE_NIGHT = 48.0;
-    private static final double FOLLOW_RANGE_DAY   = 32.0;
     private static final int    SEARCH_ACTIVE_BASE  = 1000;
     private static final int    SEARCH_PASSIVE_BASE = 1000;
 
@@ -58,8 +56,6 @@ public class MobAIHandler {
     private static final int    MEMORY_PATROL_RADIUS = 80;
     private static final long   MEMORY_PATROL_COOLDOWN = 6000L;
 
-    private boolean lastNightState        = false;
-    private boolean nightStateInitialized = false;
 
     // -------------------------------------------------------------------------
     // ENTITY JOIN - we ADD goals, NOT replace vanilla targeting
@@ -180,7 +176,6 @@ public class MobAIHandler {
         if (event.phase != TickEvent.Phase.END) return;
         if (!(event.level instanceof ServerLevel sl)) return;
         long gt = sl.getGameTime();
-        boolean isNight = isNight(sl);
 
         // Footsteps
         if (gt % 20 == 0) {
@@ -193,18 +188,8 @@ public class MobAIHandler {
 
         if (gt % 10 != 0) return;
 
-        // Follow range on day/night change
-        boolean changed = !nightStateInitialized || isNight != lastNightState;
-        if (changed) {
-            lastNightState = isNight; nightStateInitialized = true;
-            double range = isNight ? FOLLOW_RANGE_NIGHT : FOLLOW_RANGE_DAY;
-            sl.getEntities().getAll().forEach(entity -> {
-                if (!(entity instanceof Mob mob)) return;
-                var attr = mob.getAttribute(
-                    net.minecraft.world.entity.ai.attributes.Attributes.FOLLOW_RANGE);
-                if (attr != null) attr.setBaseValue(range);
-            });
-        }
+        // Note: FOLLOW_RANGE attribute is set by ExtremeDifficulty.applyAggroRange()
+        // 32 blocks day, 48 blocks night - no need to duplicate here
 
         sl.getEntities().getAll().forEach(entity -> {
             if (!(entity instanceof Mob mob)) return;
