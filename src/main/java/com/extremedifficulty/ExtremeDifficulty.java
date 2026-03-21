@@ -19,7 +19,6 @@ import net.minecraft.world.entity.monster.piglin.Piglin;
 import net.minecraft.world.entity.monster.piglin.PiglinBrute;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.phys.AABB;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
@@ -35,7 +34,6 @@ import net.minecraftforge.fml.loading.FMLEnvironment;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import java.util.List;
 
 @Mod("extremedifficulty")
 public class ExtremeDifficulty {
@@ -64,6 +62,7 @@ public class ExtremeDifficulty {
         MinecraftForge.EVENT_BUS.register(new MobAIHandler());
         MinecraftForge.EVENT_BUS.register(new SoundSystem());
         MinecraftForge.EVENT_BUS.register(new PlayerPositionTracker());
+        MinecraftForge.EVENT_BUS.register(new DebugCommand());
         LOGGER.info("[ExtremeDifficulty] Mod loaded!");
     }
 
@@ -128,30 +127,9 @@ public class ExtremeDifficulty {
             // OPT: skip aggro range if no players present
             if (hasPlayers) applyAggroRange(living, night);
         });
-
-        // Aggro loop - OPT: use AABB centered on mob, not inflate on entity BB
-        if (hasPlayers) {
-            double range = night ? NIGHT_AGGRO_RANGE : DAY_AGGRO_RANGE;
-            serverLevel.getEntities().getAll().forEach(entity -> {
-                if (!(entity instanceof Mob mob)) return;
-                if (mob.getTarget() != null) return;
-                // OPT: AABB centered on mob position (not inflated entity BB)
-                AABB searchBox = new AABB(
-                    mob.getX() - range, mob.getY() - range, mob.getZ() - range,
-                    mob.getX() + range, mob.getY() + range, mob.getZ() + range
-                );
-                List<Player> nearby = serverLevel.getEntitiesOfClass(
-                    Player.class, searchBox,
-                    p -> !p.isCreative() && !p.isSpectator() && p.isAlive()
-                );
-                if (nearby.isEmpty()) return;
-                Player nearest = nearby.stream()
-                    .min((a, b) -> Double.compare(
-                        mob.distanceToSqr(a), mob.distanceToSqr(b)))
-                    .orElse(null);
-                if (nearest != null) mob.setTarget(nearest);
-            });
-        }
+        // NOTE: No custom aggro loop - vanilla NearestAttackableTargetGoal
+        // handles targeting with proper LOS checks. Adding setTarget() here
+        // bypasses LOS and causes mobs to target through walls.
     }
 
     // -------------------------------------------------------------------------
