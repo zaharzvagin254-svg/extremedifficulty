@@ -6,7 +6,6 @@ import net.minecraft.world.Difficulty;
 import net.minecraft.world.entity.*;
 import net.minecraft.world.entity.ai.goal.*;
 import net.minecraft.world.entity.ai.goal.target.NearestAttackableTargetGoal;
-import net.minecraft.world.entity.ai.targeting.TargetingConditions;
 import net.minecraft.world.entity.monster.*;
 import net.minecraft.world.entity.npc.Villager;
 import net.minecraft.world.entity.npc.WanderingTrader;
@@ -49,8 +48,6 @@ public class MobAIHandler {
     // We only add hearing at night as extra
     private static final double HEAR_NIGHT_NORMAL = 10.0;
     private static final double HEAR_NIGHT_SNEAK  = 4.0;
-    private static final double HEAR_DROWNED_WATER = 10.0;
-    private static final double HEAR_DROWNED_LAND  = 5.0;
 
     private static final double FOLLOW_RANGE_NIGHT = 48.0;
     private static final double FOLLOW_RANGE_DAY   = 32.0;
@@ -117,9 +114,6 @@ public class MobAIHandler {
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         if (breakDoors) mob.goalSelector.addGoal(3, new FlankGoal(mob));
 
-        // Add night hearing on top of vanilla targeting (higher priority = fires first)
-        // Vanilla NearestAttackableTargetGoal<Player> stays untouched
-        mob.targetSelector.addGoal(2, new HearGoal(mob));
 
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
@@ -127,7 +121,6 @@ public class MobAIHandler {
     private void addDrownedGoals(Drowned drowned) {
         drowned.goalSelector.addGoal(4, new AdvancedSearchGoal(drowned, 1.0));
         drowned.goalSelector.addGoal(5, new MemoryPatrolGoal(drowned));
-        drowned.targetSelector.addGoal(2, new DrownedHearGoal(drowned));
         drowned.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
 
@@ -136,7 +129,6 @@ public class MobAIHandler {
         mob.goalSelector.addGoal(3, new SafeKeepDistanceGoal(mob, 6.0, 14.0));
         mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
-        mob.targetSelector.addGoal(2, new HearGoal(mob));
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.5f);
     }
 
@@ -145,7 +137,6 @@ public class MobAIHandler {
         mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
         if (keepsDistance)
             mob.goalSelector.addGoal(2, new SafeKeepDistanceGoal(mob, 8.0, 12.0));
-        mob.targetSelector.addGoal(2, new HearGoal(mob));
         mob.getNavigation().setMaxVisitedNodesMultiplier(
             mob instanceof Spider ? 3.0f : 2.0f);
     }
@@ -356,60 +347,6 @@ public class MobAIHandler {
     // =========================================================================
 
     // Hear goal - always active, but longer range at night
-    // Day:   6 blocks normal, 3 blocks sneaking
-    // Night: 10 blocks normal, 4 blocks sneaking
-    static class HearGoal extends NearestAttackableTargetGoal<Player> {
-        private final TargetingConditions dayNormal;
-        private final TargetingConditions daySneak;
-        private final TargetingConditions nightNormal;
-        private final TargetingConditions nightSneak;
-
-        public HearGoal(Mob mob) {
-            super(mob, Player.class, 10, true, false, null);
-            this.dayNormal   = TargetingConditions.forCombat().range(6.0).ignoreLineOfSight();
-            this.daySneak    = TargetingConditions.forCombat().range(3.0).ignoreLineOfSight();
-            this.nightNormal = TargetingConditions.forCombat().range(HEAR_NIGHT_NORMAL).ignoreLineOfSight();
-            this.nightSneak  = TargetingConditions.forCombat().range(HEAR_NIGHT_SNEAK).ignoreLineOfSight();
-        }
-
-        @Override
-        public boolean canUse() {
-            Player nearest = mob.level().getNearestPlayer(mob, HEAR_NIGHT_NORMAL);
-            if (nearest == null || nearest.isCreative() || nearest.isSpectator()) return false;
-            if (nearest.isInvisible()) return false;
-            boolean night   = isNight(mob.level());
-            boolean sneak   = nearest.isCrouching();
-            if (night) {
-                this.targetConditions = sneak ? nightSneak : nightNormal;
-            } else {
-                this.targetConditions = sneak ? daySneak : dayNormal;
-            }
-            return super.canUse();
-        }
-    }
-
-    // Drowned hears better in water
-    static class DrownedHearGoal extends NearestAttackableTargetGoal<Player> {
-        private final TargetingConditions waterHear, landHear, sneakHear;
-
-        public DrownedHearGoal(Drowned mob) {
-            super(mob, Player.class, 10, true, false, null);
-            this.waterHear = TargetingConditions.forCombat().range(HEAR_DROWNED_WATER).ignoreLineOfSight();
-            this.landHear  = TargetingConditions.forCombat().range(HEAR_DROWNED_LAND).ignoreLineOfSight();
-            this.sneakHear = TargetingConditions.forCombat().range(HEAR_NIGHT_SNEAK).ignoreLineOfSight();
-        }
-
-        @Override
-        public boolean canUse() {
-            Player nearest = mob.level().getNearestPlayer(mob, HEAR_DROWNED_WATER);
-            if (nearest == null || nearest.isCreative() || nearest.isSpectator()) return false;
-            if (nearest.isInvisible()) return false;
-            this.targetConditions = nearest.isCrouching() ? sneakHear
-                : (mob.isInWater() ? waterHear : landHear);
-            return super.canUse();
-        }
-    }
-
     static class SkeletonCoverGoal extends Goal {
         private final Mob mob;
         private BlockPos coverPos = null;
