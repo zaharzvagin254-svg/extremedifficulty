@@ -288,6 +288,9 @@ public class MobAIHandler {
             mob.getMaxHeadYRot(), mob.getMaxHeadXRot());
     }
 
+    // NBT key: zombie saw player enter a door
+    private static final String NBT_SAW_DOOR = "ed_door";
+
     private void updateSearchState(Mob mob, ServerLevel level, long gt) {
         var tag = mob.getPersistentData();
         int state = tag.getInt(NBT_SEARCH_STATE);
@@ -295,15 +298,20 @@ public class MobAIHandler {
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
                 if (mob.hasLineOfSight(player)) {
-                    // Can see player - update last known position, keep target
+                    // Can see - update last known pos, clear door flag
                     tag.putDouble(NBT_LAST_X, player.getX());
                     tag.putDouble(NBT_LAST_Y, player.getY());
                     tag.putDouble(NBT_LAST_Z, player.getZ());
                     tag.putInt(NBT_SEARCH_STATE, 0);
                     tag.putInt(NBT_SEARCH_TICKS, 0);
+                    tag.putByte(NBT_SAW_DOOR, (byte) 0);
                 } else {
-                    // No LOS at all - lose target, enter search state
-                    // canHear only keeps target if player is walking nearby
+                    // Lost LOS - check if player went through a door nearby
+                    if (mob instanceof Zombie && tag.contains(NBT_LAST_X)) {
+                        if (isDoorNearLastPos(level, tag)) {
+                            tag.putByte(NBT_SAW_DOOR, (byte) 1);
+                        }
+                    }
                     boolean canHear = canHearPlayer(mob, player);
                     if (!canHear) {
                         mob.setTarget(null);
@@ -312,7 +320,6 @@ public class MobAIHandler {
                             tag.putInt(NBT_SEARCH_TICKS, 0);
                         }
                     }
-                    // If can hear (player walking loudly nearby) - keep target briefly
                 }
             }
             return;
@@ -368,14 +375,32 @@ public class MobAIHandler {
         tag.putLong(NBT_FLEE_DAY, day);
     }
 
+    /**
+     * Check if there is a closed door within 3 blocks of the last known player position.
+     * Used to detect when player entered a building through a door.
+     */
+    private static boolean isDoorNearLastPos(ServerLevel level,
+                                              net.minecraft.nbt.CompoundTag tag) {
+        int lx = (int) tag.getDouble(NBT_LAST_X);
+        int ly = (int) tag.getDouble(NBT_LAST_Y);
+        int lz = (int) tag.getDouble(NBT_LAST_Z);
+        for (int dx = -3; dx <= 3; dx++)
+        for (int dy = -1; dy <= 1; dy++)
+        for (int dz = -3; dz <= 3; dz++) {
+            BlockPos bp = new BlockPos(lx+dx, ly+dy, lz+dz);
+            if (level.getBlockState(bp).getBlock()
+                    instanceof net.minecraft.world.level.block.DoorBlock) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     static void clearSearch(net.minecraft.nbt.CompoundTag tag) {
         tag.putInt(NBT_SEARCH_STATE, 0);
         tag.putInt(NBT_SEARCH_TICKS, 0);
-        tag.remove(NBT_LAST_X);
-        tag.remove(NBT_LAST_Y);
-        tag.remove(NBT_LAST_Z);
-        // Goal will stop automatically since canUse/canContinueToUse check LAST_X
-        // Vanilla wander/random stroll goals will take over naturally
+        tag.remove(NBT_LAST_X); tag.remove(NBT_LAST_Y); tag.remove(NBT_LAST_Z);
+        tag.putByte(NBT_SAW_DOOR, (byte) 0);
     }
 
     private boolean canHearPlayer(Mob mob, Player player) {
@@ -672,9 +697,34 @@ public class MobAIHandler {
     }
 
     static class SmartBreakDoorGoal extends BreakDoorGoal {
-        public SmartBreakDoorGoal(Mob mob){super(mob,60,d->d==Difficulty.HARD);}
-        @Override public boolean canUse(){return mob.getTarget()!=null&&super.canUse();}
-        @Override public boolean canContinueToUse(){return mob.getTarget()!=null&&super.canContinueToUse();}
+        public SmartBreakDoorGoal(Mob mob) { super(mob, 60, d -> d == Difficulty.HARD); }
+
+        @Override
+        public boolean canUse() {
+            // Case 1: has active target - break door if blocking path
+            if (mob.getTarget() != null) return super.canUse();
+            // Case 2: saw player enter through door - break it to follow
+            var tag = mob.getPersistentData();
+            if (tag.getByte(NBT_SAW_DOOR) == 1) {
+                // Only if there's actually a door nearby (within 2 blocks)
+                return super.canUse();
+            }
+            return false;
+        }
+
+        @Override
+        public boolean canContinueToUse() {
+            var tag = mob.getPersistentData();
+            return (mob.getTarget() != null || tag.getByte(NBT_SAW_DOOR) == 1)
+                && super.canContinueToUse();
+        }
+
+        @Override
+        public void stop() {
+            super.stop();
+            // Clear door flag once we break through (or give up)
+            mob.getPersistentData().putByte(NBT_SAW_DOOR, (byte) 0);
+        }
     }
 
     static class SafeKeepDistanceGoal extends Goal {
