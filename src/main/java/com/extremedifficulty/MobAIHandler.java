@@ -15,7 +15,6 @@ import net.minecraft.world.item.BowItem;
 import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.levelgen.Heightmap;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.HitResult;
@@ -84,12 +83,8 @@ public class MobAIHandler {
         } else if (entity instanceof Zombie z && !(z instanceof ZombifiedPiglin)) {
             setupZombie(z);
         } else if (entity instanceof Stray stray) {
-            // FIX: always setup as archer - don't check bow at join time
-            // (items assigned after EntityJoinLevelEvent)
             setupArcherSkeleton(stray);
         } else if (entity.getClass() == Skeleton.class) {
-            // FIX: always setup as archer - SkeletonCoverGoal.canUse()
-            // will check bow at runtime before activating
             setupArcherSkeleton((Skeleton) entity);
         } else if (entity instanceof Spider sp) {
             setupBasic(sp, true, false);
@@ -106,94 +101,86 @@ public class MobAIHandler {
         assignSearchDuration((Mob) entity);
     }
 
+    // -------------------------------------------------------------------------
+    // SETUP METHODS
+    // Vanilla goal priorities for reference:
+    //   Zombie MeleeAttack = priority 4 (MOVE+LOOK)
+    //   Skeleton RangedBow = priority 4 (MOVE+LOOK)
+    // OUR goals must NOT use MOVE at priority <= 4 or they block vanilla attacks
+    // -------------------------------------------------------------------------
+
     private void setupZombie(Zombie zombie) {
         zombie.goalSelector.getAvailableGoals().removeIf(
             w -> w.getGoal() instanceof BreakDoorGoal);
         zombie.goalSelector.addGoal(1, new SmartBreakDoorGoal(zombie));
-        zombie.goalSelector.addGoal(4, new AdvancedSearchGoal(zombie, 1.0));
-        zombie.goalSelector.addGoal(5, new MemoryPatrolGoal(zombie));
+        // FIX: priorities 5,6,7 so vanilla MeleeAttackGoal at 4 is never blocked
         zombie.goalSelector.addGoal(3, new FlankGoal(zombie));
+        zombie.goalSelector.addGoal(5, new AdvancedSearchGoal(zombie, 1.0));
+        zombie.goalSelector.addGoal(6, new MemoryPatrolGoal(zombie));
         zombie.targetSelector.addGoal(3, new DetectionGoal(zombie, true));
-        // Vanilla: Zombie targets Player, Villager, WanderingTrader, IronGolem
-        zombie.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            zombie, Villager.class, true));
-        zombie.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            zombie, WanderingTrader.class, true));
+        zombie.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(zombie, Villager.class, true));
+        zombie.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(zombie, WanderingTrader.class, true));
         zombie.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
 
     private void setupZombieLike(Mob mob) {
-        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
-        mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
+        mob.goalSelector.addGoal(5, new AdvancedSearchGoal(mob, 1.0));
+        mob.goalSelector.addGoal(6, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, true));
-        // Vanilla: Husk targets Player, Villager, WanderingTrader, IronGolem
-        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            mob, Villager.class, true));
-        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            mob, WanderingTrader.class, true));
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(mob, Villager.class, true));
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(mob, WanderingTrader.class, true));
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
 
     private void setupDrowned(Drowned drowned) {
-        drowned.goalSelector.addGoal(4, new AdvancedSearchGoal(drowned, 1.0));
-        drowned.goalSelector.addGoal(5, new MemoryPatrolGoal(drowned));
+        drowned.goalSelector.addGoal(5, new AdvancedSearchGoal(drowned, 1.0));
+        drowned.goalSelector.addGoal(6, new MemoryPatrolGoal(drowned));
         drowned.targetSelector.addGoal(3, new DrownedDetectionGoal(drowned));
-        // Vanilla: Drowned targets Player, Villager, WanderingTrader, IronGolem
-        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            drowned, Villager.class, true));
-        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            drowned, WanderingTrader.class, true));
+        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(drowned, Villager.class, true));
+        drowned.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(drowned, WanderingTrader.class, true));
         drowned.getNavigation().setMaxVisitedNodesMultiplier(2.0f);
     }
 
     private void setupArcherSkeleton(AbstractSkeleton mob) {
+        // FIX: SkeletonCoverGoal at 2 (MOVE only - doesn't block RangedAttack)
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
-        mob.goalSelector.addGoal(3, new SafeKeepDistanceGoal(mob, 6.0, 14.0));
-        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
-        mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
+        // FIX: SafeKeepDistanceGoal at 5 (HIGHER number = LOWER priority)
+        // Vanilla RangedBowAttackGoal is at priority 4 - now NOT blocked
+        mob.goalSelector.addGoal(5, new SafeKeepDistanceGoal(mob, 6.0, 14.0));
+        mob.goalSelector.addGoal(6, new AdvancedSearchGoal(mob, 1.0));
+        mob.goalSelector.addGoal(7, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, true));
-        // Vanilla: Skeleton targets Player and IronGolem only - NOT Villager
         mob.getNavigation().setMaxVisitedNodesMultiplier(2.5f);
     }
 
     private void setupMeleeRaider(Mob mob) {
-        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
-        mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
+        mob.goalSelector.addGoal(5, new AdvancedSearchGoal(mob, 1.0));
+        mob.goalSelector.addGoal(6, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
-        // Vanilla: Vindicator/WitherSkeleton targets Player, Villager, WanderingTrader, IronGolem
-        // BUT WitherSkeleton is Nether-only - it doesn't encounter Villagers naturally
-        // Only add villager targeting for Vindicator (raids)
         if (mob instanceof Vindicator) {
-            mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-                mob, Villager.class, true));
-            mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-                mob, WanderingTrader.class, true));
+            mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(mob, Villager.class, true));
+            mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(mob, WanderingTrader.class, true));
         }
         mob.getNavigation().setMaxVisitedNodesMultiplier(3.0f);
     }
 
     private void setupBasic(Mob mob, boolean usesHearing, boolean keepsDistance) {
-        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
-        mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
+        mob.goalSelector.addGoal(5, new AdvancedSearchGoal(mob, 1.0));
+        mob.goalSelector.addGoal(6, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, usesHearing));
         if (keepsDistance)
-            mob.goalSelector.addGoal(2, new SafeKeepDistanceGoal(mob, 8.0, 12.0));
-        // Vanilla: Spider/CaveSpider targets Player and IronGolem - NOT Villager
-        mob.getNavigation().setMaxVisitedNodesMultiplier(
-            mob instanceof Spider ? 3.0f : 2.0f);
+            mob.goalSelector.addGoal(5, new SafeKeepDistanceGoal(mob, 8.0, 12.0));
+        mob.getNavigation().setMaxVisitedNodesMultiplier(mob instanceof Spider ? 3.0f : 2.0f);
     }
 
     private void setupRangedRaider(Pillager mob) {
         mob.goalSelector.addGoal(2, new SkeletonCoverGoal(mob));
-        mob.goalSelector.addGoal(3, new SafeKeepDistanceGoal(mob, 10.0, 16.0));
-        mob.goalSelector.addGoal(4, new AdvancedSearchGoal(mob, 1.0));
-        mob.goalSelector.addGoal(5, new MemoryPatrolGoal(mob));
+        mob.goalSelector.addGoal(5, new SafeKeepDistanceGoal(mob, 10.0, 16.0));
+        mob.goalSelector.addGoal(6, new AdvancedSearchGoal(mob, 1.0));
+        mob.goalSelector.addGoal(7, new MemoryPatrolGoal(mob));
         mob.targetSelector.addGoal(3, new DetectionGoal(mob, false));
-        // Vanilla: Pillager targets Player, Villager, WanderingTrader, IronGolem
-        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            mob, Villager.class, true));
-        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(
-            mob, WanderingTrader.class, true));
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(mob, Villager.class, true));
+        mob.targetSelector.addGoal(3, new NearestAttackableTargetGoal<>(mob, WanderingTrader.class, true));
         mob.getNavigation().setMaxVisitedNodesMultiplier(3.0f);
     }
 
@@ -264,28 +251,23 @@ public class MobAIHandler {
             if (!(entity instanceof Mob mob)) return;
             updateSearchState(mob, sl, gt);
             updateFlankData(mob, gt);
-            // FIX: apply lead shot for archer skeletons every 10 ticks
             applyLeadShotIfNeeded(mob, gt);
         });
     }
 
-    // FIX: lead shot wired into server tick - called per archer skeleton with target
     private void applyLeadShotIfNeeded(Mob mob, long gt) {
-        // Only archer skeletons/strays/pillagers
         if (!(mob instanceof AbstractSkeleton) && !(mob instanceof Pillager)) return;
         if (!(mob.getTarget() instanceof Player player)) return;
         if (!player.isSprinting()) return;
-        if (mob.distanceToSqr(player) < 64.0) return; // < 8 blocks - no lead needed
-        // Only apply every ~1 second, 30% chance
+        if (mob.distanceToSqr(player) < 64.0) return;
         if (gt % 20 != 0) return;
         if (mob.getRandom().nextFloat() > 0.3f) return;
-
         double dist = mob.distanceTo(player);
-        double travelTicks = dist / 1.5; // arrow speed estimate
-        double predX = player.getX() + player.getDeltaMovement().x * travelTicks;
-        double predY = player.getY() + player.getDeltaMovement().y * travelTicks;
-        double predZ = player.getZ() + player.getDeltaMovement().z * travelTicks;
-        mob.getLookControl().setLookAt(predX, predY, predZ,
+        double t = dist / 1.5;
+        mob.getLookControl().setLookAt(
+            player.getX() + player.getDeltaMovement().x * t,
+            player.getY() + player.getDeltaMovement().y * t,
+            player.getZ() + player.getDeltaMovement().z * t,
             mob.getMaxHeadYRot(), mob.getMaxHeadXRot());
     }
 
@@ -296,17 +278,26 @@ public class MobAIHandler {
         if (mob.getTarget() instanceof Player player) {
             if (gt % 20 == 0) {
                 if (mob.hasLineOfSight(player)) {
+                    // Has LOS - update last known pos, keep target
                     tag.putDouble(NBT_LAST_X, player.getX());
                     tag.putDouble(NBT_LAST_Y, player.getY());
                     tag.putDouble(NBT_LAST_Z, player.getZ());
                     tag.putInt(NBT_SEARCH_STATE, 0);
                     tag.putInt(NBT_SEARCH_TICKS, 0);
-                } else if (!canHearPlayer(mob, player)) {
-                    mob.setTarget(null);
-                    if (tag.contains(NBT_LAST_X)) {
-                        tag.putInt(NBT_SEARCH_STATE, 1);
-                        tag.putInt(NBT_SEARCH_TICKS, 0);
+                } else {
+                    // No LOS - check hearing
+                    // FIX: if player is NOT sneaking and close enough to hear - keep target
+                    // This prevents the "zombie ignores standing player" bug
+                    boolean canHear = canHearPlayer(mob, player);
+                    if (!canHear) {
+                        // Lost both LOS and hearing - enter search state
+                        mob.setTarget(null);
+                        if (tag.contains(NBT_LAST_X)) {
+                            tag.putInt(NBT_SEARCH_STATE, 1);
+                            tag.putInt(NBT_SEARCH_TICKS, 0);
+                        }
                     }
+                    // else: can hear but no LOS - keep target, don't update last pos
                 }
             }
             return;
@@ -341,26 +332,24 @@ public class MobAIHandler {
         double dx = player.getX()-mob.getX(), dz = player.getZ()-mob.getZ();
         double len = Math.sqrt(dx*dx+dz*dz);
         if (len < 1.0) return;
-        double dot = player.getDeltaMovement().x*(dx/len) + player.getDeltaMovement().z*(dz/len);
+        double dot = player.getDeltaMovement().x*(dx/len)+player.getDeltaMovement().z*(dz/len);
         if (dot < 0.3) return;
-
         var tag = mob.getPersistentData();
-        long day = gt / 24000;
-        if (tag.contains(NBT_FLEE_DAY) && day - tag.getLong(NBT_FLEE_DAY) > 3) {
+        long day = gt/24000;
+        if (tag.contains(NBT_FLEE_DAY) && day-tag.getLong(NBT_FLEE_DAY) > 3) {
             tag.remove(NBT_FLEE_DX); tag.remove(NBT_FLEE_DZ); tag.putInt(NBT_FLEE_COUNT, 0);
         }
         int count = tag.contains(NBT_FLEE_COUNT) ? tag.getInt(NBT_FLEE_COUNT) : 0;
         double ndx=dx/len, ndz=dz/len;
-        if (count == 0) {
-            tag.putFloat(NBT_FLEE_DX, (float)ndx); tag.putFloat(NBT_FLEE_DZ, (float)ndz);
-        } else {
+        if (count==0) { tag.putFloat(NBT_FLEE_DX,(float)ndx); tag.putFloat(NBT_FLEE_DZ,(float)ndz); }
+        else {
             float a=0.3f;
             float ax=tag.getFloat(NBT_FLEE_DX)*(1-a)+(float)(ndx*a);
             float az=tag.getFloat(NBT_FLEE_DZ)*(1-a)+(float)(ndz*a);
             float nl=(float)Math.sqrt(ax*ax+az*az);
             if (nl>0.01f) { tag.putFloat(NBT_FLEE_DX,ax/nl); tag.putFloat(NBT_FLEE_DZ,az/nl); }
         }
-        tag.putInt(NBT_FLEE_COUNT, Math.min(count+1, 20));
+        tag.putInt(NBT_FLEE_COUNT, Math.min(count+1,20));
         tag.putLong(NBT_FLEE_DAY, day);
     }
 
@@ -392,139 +381,6 @@ public class MobAIHandler {
     // GOALS
     // =========================================================================
 
-    /**
-     * Skeleton seeks cover before shooting.
-     * FIX 1: hasBow() checked here at runtime, not at entity join.
-     * FIX 2: Flag.LOOK removed - doesn't block vanilla RangedAttackGoal.
-     * FIX 3: atCoverFor moved to tick() only, not canContinueToUse().
-     * FIX 4: findCover gated behind cooldown - not called every tick.
-     */
-    static class SkeletonCoverGoal extends Goal {
-        private final Mob mob;
-        private BlockPos coverPos  = null;
-        private int      cooldown  = 0;
-        private int      atCoverTicks = 0; // FIX 3: only incremented in tick()
-        private static final int STAY_AT_COVER  = 200;
-        private static final int REPOSITION_CD  = 200;
-        private static final int PREFER_MIN     = 8;
-        private static final int PREFER_MAX     = 16;
-
-        public SkeletonCoverGoal(Mob mob) {
-            this.mob = mob;
-            // FIX 2: MOVE only - don't block RangedAttackGoal which uses LOOK
-            setFlags(EnumSet.of(Flag.MOVE));
-        }
-
-        @Override
-        public boolean canUse() {
-            // FIX 1: check bow at runtime
-            if (!hasBow()) return false;
-            LivingEntity target = mob.getTarget();
-            if (target == null) return false;
-            // FIX 4: cooldown gate before expensive findCover
-            if (cooldown > 0) { cooldown--; return false; }
-            // Already at good cover - stay
-            if (coverPos != null && mob.blockPosition().closerThan(coverPos, 3.0)
-             && atCoverTicks < STAY_AT_COVER) return false;
-            return findCover(target);
-        }
-
-        @Override
-        public boolean canContinueToUse() {
-            if (!hasBow()) return false;
-            if (mob.getTarget() == null || coverPos == null) return false;
-            // FIX 3: don't increment here - moved to tick()
-            if (atCoverTicks >= STAY_AT_COVER) return false;
-            return mob.hasLineOfSight(mob.getTarget())
-                || !mob.blockPosition().closerThan(coverPos, 3.0);
-        }
-
-        private boolean hasBow() {
-            var item = mob.getMainHandItem().getItem();
-            return item instanceof BowItem || item instanceof CrossbowItem;
-        }
-
-        private boolean findCover(LivingEntity target) {
-            int mx=mob.getBlockX(), mz=mob.getBlockZ();
-            double tx=target.getX(), tz=target.getZ();
-            var level = mob.level();
-            BlockPos best = null; double bestScore = -1;
-
-            for (int i = 0; i < 16; i++) {
-                double angle = mob.getRandom().nextDouble() * Math.PI * 2;
-                double dist  = PREFER_MIN + mob.getRandom().nextDouble()*(PREFER_MAX-PREFER_MIN);
-                int nx = mx+(int)(Math.cos(angle)*dist), nz = mz+(int)(Math.sin(angle)*dist);
-                int ny = level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES, nx, nz);
-                if (ny <= 0) continue;
-                BlockPos cand = new BlockPos(nx, ny, nz);
-                double dtx=nx-tx, dtz=nz-tz, dtt=Math.sqrt(dtx*dtx+dtz*dtz);
-                if (dtt < 6 || dtt > 20) continue;
-
-                double cq = evaluateCover(level, cand, target);
-                if (cq <= 0) continue;
-
-                // LOS check from candidate to target
-                Vec3 eye = new Vec3(nx+0.5, ny+1.6, nz+0.5);
-                var clip = level.clip(new ClipContext(eye, target.getEyePosition(),
-                    ClipContext.Block.COLLIDER, ClipContext.Fluid.NONE, mob));
-                if (clip.getType() != HitResult.Type.MISS) continue;
-
-                var path = mob.getNavigation().createPath(cand, 1);
-                if (path == null || !path.canReach()) continue;
-
-                double distScore = 1.0 - Math.abs(dtt-12.0)/8.0;
-                double score = cq*0.7 + Math.max(0,distScore)*0.3;
-                if (score > bestScore) { bestScore = score; best = cand; }
-            }
-            if (best != null) { coverPos = best; atCoverTicks = 0; return true; }
-            return false;
-        }
-
-        private double evaluateCover(Level level, BlockPos pos, LivingEntity target) {
-            double pdx = pos.getX()-target.getX(), pdz = pos.getZ()-target.getZ();
-            double pl = Math.sqrt(pdx*pdx+pdz*pdz); if (pl < 0.1) return 0;
-            pdx/=pl; pdz/=pl;
-            int[] ddx={1,-1,0,0}, ddz={0,0,1,-1};
-            int cover = 0;
-            for (int i=0;i<4;i++) {
-                BlockPos nb = pos.offset(ddx[i],0,ddz[i]);
-                if (!level.getBlockState(nb).isSolidRender(level,nb)) continue;
-                if (ddx[i]*(-pdx)+ddz[i]*(-pdz) > 0.3) cover++;
-            }
-            if (cover == 0) return 0;
-            boolean canShoot = level.getBlockState(pos.above()).isAir();
-            if (!canShoot && cover >= 3) return 0.1;
-            return 0.5 + cover*0.15;
-        }
-
-        @Override
-        public void start() {
-            atCoverTicks = 0;
-            if (coverPos != null)
-                mob.getNavigation().moveTo(coverPos.getX()+0.5,coverPos.getY(),coverPos.getZ()+0.5,1.0);
-        }
-
-        @Override
-        public void tick() {
-            // FIX 3: increment only in tick()
-            atCoverTicks++;
-            if (coverPos == null) return;
-            if (mob.blockPosition().closerThan(coverPos, 3.0)) {
-                mob.getNavigation().stop();
-                if (mob.getTarget() != null)
-                    mob.getLookControl().setLookAt(mob.getTarget(), 30f, mob.getMaxHeadXRot());
-            } else if (atCoverTicks % 20 == 0) {
-                mob.getNavigation().moveTo(coverPos.getX()+0.5,coverPos.getY(),coverPos.getZ()+0.5,1.0);
-            }
-        }
-
-        @Override
-        public void stop() {
-            cooldown = mob.blockPosition().closerThan(coverPos != null ? coverPos : mob.blockPosition(), 3.0)
-                ? REPOSITION_CD * 2 : REPOSITION_CD;
-        }
-    }
-
     static class DetectionGoal extends NearestAttackableTargetGoal<Player> {
         private final boolean usesHearing;
         private final TargetingConditions normalSight, sneakSight, normalHear, sneakHear;
@@ -536,8 +392,7 @@ public class MobAIHandler {
             normalHear  = TargetingConditions.forCombat().range(HEAR_NORMAL).ignoreLineOfSight();
             sneakHear   = TargetingConditions.forCombat().range(HEAR_SNEAK).ignoreLineOfSight();
         }
-        @Override
-        public boolean canUse() {
+        @Override public boolean canUse() {
             Player nearest = mob.level().getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearest==null||nearest.isCreative()||nearest.isSpectator()||nearest.isInvisible()) return false;
             boolean sneak = nearest.isCrouching();
@@ -561,8 +416,7 @@ public class MobAIHandler {
             landHear    = TargetingConditions.forCombat().range(DROWNED_HEAR_LAND).ignoreLineOfSight();
             sneakHear   = TargetingConditions.forCombat().range(HEAR_SNEAK).ignoreLineOfSight();
         }
-        @Override
-        public boolean canUse() {
+        @Override public boolean canUse() {
             Player nearest = mob.level().getNearestPlayer(mob, DETECT_RANGE_NORMAL);
             if (nearest==null||nearest.isCreative()||nearest.isSpectator()||nearest.isInvisible()) return false;
             boolean sneak = nearest.isCrouching();
@@ -573,67 +427,166 @@ public class MobAIHandler {
         }
     }
 
+    // FIX: SkeletonCoverGoal - MOVE only, hasBow at runtime, atCoverTicks in tick() only
+    static class SkeletonCoverGoal extends Goal {
+        private final Mob mob;
+        private BlockPos coverPos = null;
+        private int cooldown = 0, atCoverTicks = 0;
+        private boolean movingToCover = false;
+        private static final int STAY = 200, CD = 200, PMIN = 8, PMAX = 16;
+
+        public SkeletonCoverGoal(Mob mob) {
+            this.mob = mob;
+            // FIX: empty flags - does NOT block RangedAttackGoal (MOVE) or LookControl (LOOK)
+            // Skeleton moves to cover in start(), then stops moving so RangedAttack can work
+            setFlags(EnumSet.noneOf(Flag.class));
+        }
+
+        private boolean hasBow() {
+            var item = mob.getMainHandItem().getItem();
+            return item instanceof BowItem || item instanceof CrossbowItem;
+        }
+
+        @Override public boolean canUse() {
+            if (!hasBow()) return false;
+            if (mob.getTarget() == null) return false;
+            if (cooldown > 0) { cooldown--; return false; }
+            // Already at good cover and not expired - stay, let RangedAttack work
+            if (coverPos != null && mob.blockPosition().closerThan(coverPos, 3.0)
+             && atCoverTicks < STAY) return false;
+            return findCover(mob.getTarget());
+        }
+
+        @Override public boolean canContinueToUse() {
+            if (!hasBow() || mob.getTarget() == null || coverPos == null) return false;
+            if (atCoverTicks >= STAY) return false;
+            return true; // stay active - RangedAttack will handle shooting
+        }
+
+        private boolean findCover(LivingEntity target) {
+            int mx=mob.getBlockX(), mz=mob.getBlockZ();
+            double tx=target.getX(), tz=target.getZ();
+            var level = mob.level();
+            BlockPos best = null; double bestScore = -1;
+            for (int i = 0; i < 16; i++) {
+                double angle = mob.getRandom().nextDouble()*Math.PI*2;
+                double dist  = PMIN + mob.getRandom().nextDouble()*(PMAX-PMIN);
+                int nx=mx+(int)(Math.cos(angle)*dist), nz=mz+(int)(Math.sin(angle)*dist);
+                int ny=level.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,nx,nz);
+                if (ny<=0) continue;
+                BlockPos cand = new BlockPos(nx,ny,nz);
+                double dtx=nx-tx,dtz=nz-tz,dtt=Math.sqrt(dtx*dtx+dtz*dtz);
+                if (dtt<6||dtt>20) continue;
+                double cq = evalCover(level, cand, target);
+                if (cq<=0) continue;
+                Vec3 eye=new Vec3(nx+0.5,ny+1.6,nz+0.5);
+                var clip=level.clip(new ClipContext(eye,target.getEyePosition(),
+                    ClipContext.Block.COLLIDER,ClipContext.Fluid.NONE,mob));
+                if (clip.getType()!=HitResult.Type.MISS) continue;
+                var path=mob.getNavigation().createPath(cand,1);
+                if (path==null||!path.canReach()) continue;
+                double ds=1.0-Math.abs(dtt-12.0)/8.0;
+                double score=cq*0.7+Math.max(0,ds)*0.3;
+                if (score>bestScore){bestScore=score;best=cand;}
+            }
+            if (best!=null){coverPos=best;atCoverTicks=0;return true;}
+            return false;
+        }
+
+        private double evalCover(net.minecraft.world.level.Level level, BlockPos pos, LivingEntity target) {
+            double pdx=pos.getX()-target.getX(),pdz=pos.getZ()-target.getZ();
+            double pl=Math.sqrt(pdx*pdx+pdz*pdz);if(pl<0.1)return 0;
+            pdx/=pl;pdz/=pl;
+            int[]ddx={1,-1,0,0},ddz={0,0,1,-1};int cover=0;
+            for(int i=0;i<4;i++){
+                BlockPos nb=pos.offset(ddx[i],0,ddz[i]);
+                if(!level.getBlockState(nb).isSolidRender(level,nb))continue;
+                if(ddx[i]*(-pdx)+ddz[i]*(-pdz)>0.3)cover++;
+            }
+            if(cover==0)return 0;
+            boolean canShoot=level.getBlockState(pos.above()).isAir();
+            if(!canShoot&&cover>=3)return 0.1;
+            return 0.5+cover*0.15;
+        }
+
+        @Override public void start() {
+            atCoverTicks = 0; movingToCover = true;
+            if (coverPos != null)
+                mob.getNavigation().moveTo(coverPos.getX()+0.5, coverPos.getY(), coverPos.getZ()+0.5, 1.0);
+        }
+
+        @Override public void tick() {
+            atCoverTicks++;
+            if (coverPos == null) return;
+            if (mob.blockPosition().closerThan(coverPos, 3.0)) {
+                // At cover - stop our navigation so RangedAttackGoal can control movement
+                if (movingToCover) {
+                    mob.getNavigation().stop();
+                    movingToCover = false;
+                }
+                // Don't touch LookControl - let RangedAttackGoal aim and shoot
+            } else {
+                // Still moving to cover position
+                movingToCover = true;
+                if (atCoverTicks % 20 == 0)
+                    mob.getNavigation().moveTo(coverPos.getX()+0.5, coverPos.getY(), coverPos.getZ()+0.5, 1.0);
+            }
+        }
+        @Override public void stop() { cooldown=mob.blockPosition().closerThan(coverPos!=null?coverPos:mob.blockPosition(),3.0)?CD*2:CD; }
+    }
+
     static class FlankGoal extends Goal {
         private final Mob mob; private BlockPos ft=null; private int dur=0;
-        private static final int MAX_DUR=200;
-        public FlankGoal(Mob mob) { this.mob=mob; setFlags(EnumSet.of(Flag.MOVE)); }
+        private static final int MAX=200;
+        public FlankGoal(Mob mob){this.mob=mob;setFlags(EnumSet.of(Flag.MOVE));}
         @Override public boolean canUse() {
-            if (mob.getTarget()==null) return false;
+            if(mob.getTarget()==null)return false;
             var tag=mob.getPersistentData();
-            if (!tag.contains(NBT_FLEE_COUNT)||tag.getInt(NBT_FLEE_COUNT)<FLANK_THRESHOLD) return false;
-            if (!tag.contains(NBT_FLEE_DX)) return false;
-            if (!(mob.level() instanceof ServerLevel sl)) return false;
+            if(!tag.contains(NBT_FLEE_COUNT)||tag.getInt(NBT_FLEE_COUNT)<FLANK_THRESHOLD)return false;
+            if(!tag.contains(NBT_FLEE_DX))return false;
+            if(!(mob.level() instanceof ServerLevel sl))return false;
             LivingEntity tgt=mob.getTarget();
-            // FIX: use centered AABB not entity BB inflate
-            List<Zombie> chasers=sl.getEntitiesOfClass(Zombie.class,
-                new AABB(mob.getX()-20,mob.getY()-5,mob.getZ()-20,
-                         mob.getX()+20,mob.getY()+5,mob.getZ()+20),
+            List<Zombie> ch=sl.getEntitiesOfClass(Zombie.class,
+                new AABB(mob.getX()-20,mob.getY()-5,mob.getZ()-20,mob.getX()+20,mob.getY()+5,mob.getZ()+20),
                 z->z!=mob&&tgt.equals(z.getTarget()));
-            if (chasers.size()<2) return false;
+            if(ch.size()<2)return false;
             int mc=tag.getInt(NBT_FLEE_COUNT);
-            for (Zombie z:chasers) {
-                int oc=z.getPersistentData().contains(NBT_FLEE_COUNT)?z.getPersistentData().getInt(NBT_FLEE_COUNT):0;
-                if (oc>mc) return false;
-            }
+            for(Zombie z:ch){int oc=z.getPersistentData().contains(NBT_FLEE_COUNT)?z.getPersistentData().getInt(NBT_FLEE_COUNT):0;if(oc>mc)return false;}
             float fdx=tag.getFloat(NBT_FLEE_DX),fdz=tag.getFloat(NBT_FLEE_DZ);
-            double fx=tgt.getX()+(-fdz)*8, fz=tgt.getZ()+fdx*8;
+            double fx=tgt.getX()+(-fdz)*8,fz=tgt.getZ()+fdx*8;
             int ny=mob.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,(int)fx,(int)fz);
-            if (ny<=0) return false;
+            if(ny<=0)return false;
             BlockPos c=new BlockPos((int)fx,ny,(int)fz);
             var path=mob.getNavigation().createPath(c,1);
-            if (path==null||!path.canReach()) return false;
-            ft=c; return true;
+            if(path==null||!path.canReach())return false;
+            ft=c;return true;
         }
-        @Override public boolean canContinueToUse() {
-            return mob.getTarget()!=null&&ft!=null&&dur<MAX_DUR&&!mob.blockPosition().closerThan(ft,3.0);
-        }
-        @Override public void start() { dur=0; }
-        @Override public void tick() { dur++; if(ft!=null) mob.getNavigation().moveTo(ft.getX()+0.5,ft.getY(),ft.getZ()+0.5,1.2); }
-        @Override public void stop() { ft=null; dur=0; }
+        @Override public boolean canContinueToUse(){return mob.getTarget()!=null&&ft!=null&&dur<MAX&&!mob.blockPosition().closerThan(ft,3.0);}
+        @Override public void start(){dur=0;}
+        @Override public void tick(){dur++;if(ft!=null)mob.getNavigation().moveTo(ft.getX()+0.5,ft.getY(),ft.getZ()+0.5,1.2);}
+        @Override public void stop(){ft=null;dur=0;}
     }
 
     static class AdvancedSearchGoal extends Goal {
-        private final Mob mob; private final double speed;
-        private BlockPos target=null; private int lt=0,st=0;
-        private double lx=Double.MIN_VALUE,lz;
-        private static final int STUCK=60;
-        public AdvancedSearchGoal(Mob mob,double speed){ this.mob=mob;this.speed=speed;setFlags(EnumSet.of(Flag.MOVE)); }
-        @Override public boolean canUse() {
-            if(mob.getTarget()!=null) return false;
+        private final Mob mob;private final double speed;
+        private BlockPos target=null;private int lt=0,st=0;
+        private double lx=Double.MIN_VALUE,lz;private static final int STUCK=60;
+        public AdvancedSearchGoal(Mob mob,double speed){this.mob=mob;this.speed=speed;setFlags(EnumSet.of(Flag.MOVE));}
+        @Override public boolean canUse(){
+            if(mob.getTarget()!=null)return false;
             var t=mob.getPersistentData();
             return t.getInt(NBT_SEARCH_STATE)>0&&t.contains(NBT_LAST_X);
         }
-        @Override public boolean canContinueToUse() {
-            if(mob.getTarget()!=null) return false;
+        @Override public boolean canContinueToUse(){
+            if(mob.getTarget()!=null)return false;
             var t=mob.getPersistentData();
             return t.getInt(NBT_SEARCH_STATE)>0&&t.contains(NBT_LAST_X);
         }
-        @Override public void start(){ lt=0;st=0;lx=mob.getX();lz=mob.getZ();mob.setAggressive(false);pick(); }
+        @Override public void start(){lt=0;st=0;lx=mob.getX();lz=mob.getZ();mob.setAggressive(false);pick();}
         @Override public void tick(){
-            lt++; mob.setAggressive(false);
-            if(lt%10==0){
-                double dx=mob.getX()-lx,dz=mob.getZ()-lz;
-                if(dx*dx+dz*dz<0.01)st+=10; else{st=0;lx=mob.getX();lz=mob.getZ();}
+            lt++;mob.setAggressive(false);
+            if(lt%10==0){double dx=mob.getX()-lx,dz=mob.getZ()-lz;
+                if(dx*dx+dz*dz<0.01)st+=10;else{st=0;lx=mob.getX();lz=mob.getZ();}
                 if(st>=STUCK){st=0;if(lt>200){clearSearch(mob.getPersistentData());return;}pick();return;}
             }
             int state=mob.getPersistentData().getInt(NBT_SEARCH_STATE);
@@ -646,13 +599,11 @@ public class MobAIHandler {
             double lxp=tag.getDouble(NBT_LAST_X),lzp=tag.getDouble(NBT_LAST_Z);
             int state=tag.getInt(NBT_SEARCH_STATE);double r=state==1?5.0:10.0;
             for(int a=0;a<2;a++){
-                double ang=mob.getRandom().nextDouble()*Math.PI*2;
-                double d=r*(0.4+mob.getRandom().nextDouble()*0.6);
+                double ang=mob.getRandom().nextDouble()*Math.PI*2,d=r*(0.4+mob.getRandom().nextDouble()*0.6);
                 int nx=(int)(lxp+Math.cos(ang)*d),nz=(int)(lzp+Math.sin(ang)*d);
                 int ny=mob.level().getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,nx,nz);
                 if(ny<=0||Math.abs(ny-mob.getBlockY())>5)continue;
-                BlockPos c=new BlockPos(nx,ny,nz);
-                var path=mob.getNavigation().createPath(c,1);
+                BlockPos c=new BlockPos(nx,ny,nz);var path=mob.getNavigation().createPath(c,1);
                 if(path!=null&&path.canReach()){target=c;return;}
             }
             target=null;
@@ -661,66 +612,58 @@ public class MobAIHandler {
     }
 
     static class MemoryPatrolGoal extends Goal {
-        private final Mob mob; private BlockPos dest=null; private int pt=0;
-        private static final int TIMEOUT=1200; private static final double SPD=0.4;
-        // FIX PERF: cache last check time to avoid SavedData lookup every tick
-        private long lastCheckGt = -99999;
-        private static final long CHECK_INTERVAL = 200; // only check every 10 sec
-
-        public MemoryPatrolGoal(Mob mob){ this.mob=mob; setFlags(EnumSet.of(Flag.MOVE)); }
+        private final Mob mob;private BlockPos dest=null;private int pt=0;
+        private static final int TIMEOUT=1200;private static final double SPD=0.4;
+        private long lastCheckGt=-99999;private static final long CHECK_INTERVAL=200;
+        public MemoryPatrolGoal(Mob mob){this.mob=mob;setFlags(EnumSet.of(Flag.MOVE));}
         @Override public boolean canUse(){
-            if(mob.getTarget()!=null) return false;
+            if(mob.getTarget()!=null)return false;
             var tag=mob.getPersistentData();
-            if(tag.getInt(NBT_SEARCH_STATE)>0||tag.contains(NBT_LAST_X)) return false;
-            if(mob.level().dimension()!=Level.OVERWORLD) return false;
-            if(!(mob.level() instanceof ServerLevel sl)) return false;
+            if(tag.getInt(NBT_SEARCH_STATE)>0||tag.contains(NBT_LAST_X))return false;
+            if(mob.level().dimension()!=Level.OVERWORLD)return false;
+            if(!(mob.level() instanceof ServerLevel sl))return false;
             long gt=sl.getGameTime();
-            // FIX PERF: rate-limit canUse to every 10 sec
-            if(gt-lastCheckGt < CHECK_INTERVAL) return false;
-            lastCheckGt = gt;
-            if(tag.contains(NBT_MEM_CD)&&gt<tag.getLong(NBT_MEM_CD)) return false;
+            if(gt-lastCheckGt<CHECK_INTERVAL)return false;
+            lastCheckGt=gt;
+            if(tag.contains(NBT_MEM_CD)&&gt<tag.getLong(NBT_MEM_CD))return false;
             BlockPos hot=PlayerMemoryData.get(sl.getServer().overworld())
                 .getNearestHotSpot(mob.getBlockX(),mob.getBlockZ(),MEMORY_PATROL_RADIUS);
-            if(hot==null) return false;
+            if(hot==null)return false;
             int ny=sl.getHeight(Heightmap.Types.MOTION_BLOCKING_NO_LEAVES,hot.getX(),hot.getZ());
-            if(ny<=0) return false;
+            if(ny<=0)return false;
             BlockPos r=new BlockPos(hot.getX(),ny,hot.getZ());
-            if(mob.blockPosition().closerThan(r,8.0)) return false;
+            if(mob.blockPosition().closerThan(r,8.0))return false;
             var path=mob.getNavigation().createPath(r,1);
-            if(path==null||!path.canReach()) return false;
-            dest=r; return true;
+            if(path==null||!path.canReach())return false;
+            dest=r;return true;
         }
         @Override public boolean canContinueToUse(){
-            if(mob.getTarget()!=null) return false;
+            if(mob.getTarget()!=null)return false;
             var tag=mob.getPersistentData();
-            if(tag.getInt(NBT_SEARCH_STATE)>0) return false;
+            if(tag.getInt(NBT_SEARCH_STATE)>0)return false;
             return dest!=null&&pt<TIMEOUT&&!mob.blockPosition().closerThan(dest,3.0);
         }
-        @Override public void start(){ pt=0;mob.setAggressive(false);if(dest!=null)mob.getNavigation().moveTo(dest.getX()+0.5,dest.getY(),dest.getZ()+0.5,SPD); }
-        @Override public void tick(){
-            pt++;mob.setAggressive(false);
-            if(pt%40==0&&dest!=null)mob.getNavigation().moveTo(dest.getX()+0.5,dest.getY(),dest.getZ()+0.5,SPD);
-        }
+        @Override public void start(){pt=0;mob.setAggressive(false);if(dest!=null)mob.getNavigation().moveTo(dest.getX()+0.5,dest.getY(),dest.getZ()+0.5,SPD);}
+        @Override public void tick(){pt++;mob.setAggressive(false);if(pt%40==0&&dest!=null)mob.getNavigation().moveTo(dest.getX()+0.5,dest.getY(),dest.getZ()+0.5,SPD);}
         @Override public void stop(){
             mob.getNavigation().stop();mob.setAggressive(false);dest=null;pt=0;
-            if(mob.level() instanceof ServerLevel sl)
-                mob.getPersistentData().putLong(NBT_MEM_CD,sl.getGameTime()+MEMORY_PATROL_COOLDOWN);
+            if(mob.level() instanceof ServerLevel sl)mob.getPersistentData().putLong(NBT_MEM_CD,sl.getGameTime()+MEMORY_PATROL_COOLDOWN);
         }
     }
 
     static class SmartBreakDoorGoal extends BreakDoorGoal {
-        public SmartBreakDoorGoal(Mob mob){ super(mob,60,d->d==Difficulty.HARD); }
-        @Override public boolean canUse(){ return mob.getTarget()!=null&&super.canUse(); }
-        @Override public boolean canContinueToUse(){ return mob.getTarget()!=null&&super.canContinueToUse(); }
+        public SmartBreakDoorGoal(Mob mob){super(mob,60,d->d==Difficulty.HARD);}
+        @Override public boolean canUse(){return mob.getTarget()!=null&&super.canUse();}
+        @Override public boolean canContinueToUse(){return mob.getTarget()!=null&&super.canContinueToUse();}
     }
 
     static class SafeKeepDistanceGoal extends Goal {
-        private final Mob mob; private final double minSq,preferSq;
+        private final Mob mob;private final double minSq,preferSq;
         public SafeKeepDistanceGoal(Mob mob,double min,double prefer){
             this.mob=mob;minSq=min*min;preferSq=prefer*prefer;setFlags(EnumSet.of(Flag.MOVE));
         }
-        @Override public boolean canUse(){ LivingEntity t=mob.getTarget();return t!=null&&mob.distanceToSqr(t)<minSq; }
-        @Override public boolean canContinueToUse(){ LivingEntity t=mob.getTarget();return t!=null&&mob.distanceToSqr(t)<preferSq; }
+        @Override public boolean canUse(){LivingEntity t=mob.getTarget();return t!=null&&mob.distanceToSqr(t)<minSq;}
+        @Override public boolean canContinueToUse(){LivingEntity t=mob.getTarget();return t!=null&&mob.distanceToSqr(t)<preferSq;}
         @Override public void tick(){
             LivingEntity t=mob.getTarget();if(t==null)return;
             double dx=mob.getX()-t.getX(),dz=mob.getZ()-t.getZ(),ls=dx*dx+dz*dz;
