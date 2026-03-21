@@ -371,13 +371,24 @@ public class MobAIHandler {
     }
 
     /**
-     * Reliable LOS using COLLIDER clip - won't pass through solid blocks.
-     * Vanilla hasLineOfSight() uses VISUAL which can pass through some blocks.
+     * Reliable LOS using COLLIDER clip.
+     * Offsets start position slightly toward target to avoid
+     * false MISS when mob is pressed against a wall.
      */
     static boolean hasReliableLOS(Mob mob, LivingEntity target) {
+        Vec3 from = mob.getEyePosition();
+        Vec3 to   = target.getEyePosition();
+
+        // Offset start position 0.1 blocks toward target
+        // This prevents false-positive when mob is against a wall
+        Vec3 dir = to.subtract(from);
+        double len = dir.length();
+        if (len > 0.1) {
+            from = from.add(dir.normalize().scale(0.1));
+        }
+
         var clip = mob.level().clip(new net.minecraft.world.level.ClipContext(
-            mob.getEyePosition(),
-            target.getEyePosition(),
+            from, to,
             net.minecraft.world.level.ClipContext.Block.COLLIDER,
             net.minecraft.world.level.ClipContext.Fluid.NONE,
             mob
@@ -442,14 +453,7 @@ public class MobAIHandler {
                     return true;
                 }
                 // No LOS - investigate instead of full aggro
-                var tag = mob.getPersistentData();
-                tag.putDouble(NBT_LAST_X, player.getX());
-                tag.putDouble(NBT_LAST_Y, player.getY());
-                tag.putDouble(NBT_LAST_Z, player.getZ());
-                tag.putDouble(NBT_ANCHOR_X, player.getX());
-                tag.putDouble(NBT_ANCHOR_Z, player.getZ());
-                tag.putInt(NBT_SEARCH_STATE, 1);
-                tag.putInt(NBT_SEARCH_TICKS, 0);
+                sendToInvestigate(mob, player);
                 mob.setLastHurtByMob(null);
                 return false;
             }
@@ -458,14 +462,26 @@ public class MobAIHandler {
 
         @Override
         public boolean canContinueToUse() {
-            // If target is a player and we lost LOS - stop goal
-            // updateSearchState will handle cleanup
             if (mob.getTarget() instanceof Player player) {
                 if (!hasReliableLOS(mob, player) && !canHearPlayerPublic(mob, player)) {
+                    // Lost LOS and can't hear - clear lastHurtByMob to prevent loop
+                    mob.setLastHurtByMob(null);
+                    sendToInvestigate(mob, player);
                     return false;
                 }
             }
             return super.canContinueToUse();
+        }
+
+        private static void sendToInvestigate(Mob mob, Player player) {
+            var tag = mob.getPersistentData();
+            tag.putDouble(NBT_LAST_X, player.getX());
+            tag.putDouble(NBT_LAST_Y, player.getY());
+            tag.putDouble(NBT_LAST_Z, player.getZ());
+            tag.putDouble(NBT_ANCHOR_X, player.getX());
+            tag.putDouble(NBT_ANCHOR_Z, player.getZ());
+            tag.putInt(NBT_SEARCH_STATE, 1);
+            tag.putInt(NBT_SEARCH_TICKS, 0);
         }
     }
 
