@@ -20,6 +20,7 @@ import net.minecraft.world.entity.monster.piglin.PiglinBrute;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.Level;
 import net.minecraftforge.api.distmarker.Dist;
+import java.util.List;
 import net.minecraftforge.common.MinecraftForge;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.event.entity.EntityJoinLevelEvent;
@@ -61,7 +62,6 @@ public class ExtremeDifficulty {
         MinecraftForge.EVENT_BUS.register(new MobAIHandler());
         MinecraftForge.EVENT_BUS.register(new SoundSystem());
         MinecraftForge.EVENT_BUS.register(new PlayerPositionTracker());
-        MinecraftForge.EVENT_BUS.register(new DebugCommand());
         LOGGER.info("[ExtremeDifficulty] Mod loaded!");
     }
 
